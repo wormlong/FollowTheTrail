@@ -27,7 +27,8 @@ async function initTrailDatabase(): Promise<SQLite.SQLiteDatabase> {
       max_speed_mps REAL NOT NULL DEFAULT 0,
       avg_speed_mps REAL NOT NULL DEFAULT 0,
       status TEXT NOT NULL,
-      active_version_id TEXT NOT NULL
+      active_version_id TEXT NOT NULL,
+      source TEXT NOT NULL DEFAULT 'recorded'
     );
 
     CREATE TABLE IF NOT EXISTS track_versions (
@@ -111,6 +112,15 @@ async function initTrailDatabase(): Promise<SQLite.SQLiteDatabase> {
   `);
 
   // Non-destructive column extension for pre-existing local SQLite databases
+  const trackCols = await db.getAllAsync<{ name: string }>('PRAGMA table_info(tracks)');
+  const trackColNames = new Set(trackCols.map((c) => c.name));
+  if (!trackColNames.has('source')) {
+    await db.execAsync(
+      "ALTER TABLE tracks ADD COLUMN source TEXT NOT NULL DEFAULT 'recorded'"
+    );
+  }
+  await db.execAsync("UPDATE tracks SET source = 'imported' WHERE id LIKE 'imp-%'");
+
   const photoCols = await db.getAllAsync<{ name: string }>('PRAGMA table_info(photos)');
   const colNames = new Set(photoCols.map((c) => c.name));
   if (!colNames.has('track_point_id')) {

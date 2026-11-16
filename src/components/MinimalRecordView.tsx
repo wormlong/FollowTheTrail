@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Camera, Pause, Play } from 'lucide-react';
+import { Camera, Pause, Play, X } from 'lucide-react';
 import {
   GeoPoint,
   MapLayersState,
@@ -15,9 +15,12 @@ import {
 } from '../utils/elevationMath';
 import { loadActiveDraft, saveActiveDraft } from '../utils/offlineDb';
 import { processAndMatchPhoto } from '../utils/photoMatcher';
+import { normalizeHeadingDegrees } from '../utils/compassHeading';
 import { MapLibreOutdoorMap } from './MapLibreOutdoorMap';
 
 interface MinimalRecordViewProps {
+  referenceRoute?: { id: string; title: string; points: GeoPoint[] } | null;
+  onClearReferenceRoute?: () => void;
   onTrackCompleted: (track: RecordedTrack) => void;
   onViewCompletedTrack: (trackId: string) => void;
   onGpsUpdate?: (gps: GeoPoint | null) => void;
@@ -37,6 +40,8 @@ const MINIMAL_LAYERS: MapLayersState = {
 const HOLD_MS = 1500;
 
 export const MinimalRecordView: React.FC<MinimalRecordViewProps> = ({
+  referenceRoute = null,
+  onClearReferenceRoute,
   onTrackCompleted,
   onViewCompletedTrack,
   onGpsUpdate,
@@ -141,6 +146,7 @@ export const MinimalRecordView: React.FC<MinimalRecordViewProps> = ({
           timestamp: pos.timestamp || Date.now(),
           accuracy: pos.coords.accuracy,
           speedMps: pos.coords.speed ?? 0,
+          heading: normalizeHeadingDegrees(pos.coords.heading),
         };
         setLiveGps(nextGps);
 
@@ -218,6 +224,39 @@ export const MinimalRecordView: React.FC<MinimalRecordViewProps> = ({
     }, 30);
   };
 
+  const handleRequestLocate = (): Promise<GeoPoint | null> => {
+    return new Promise((resolve) => {
+      if (!('geolocation' in navigator)) {
+        setNotice('当前浏览器不支持真实 Geolocation 定位，请使用移动端原生客户端。');
+        resolve(null);
+        return;
+      }
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          const hasRealAlt = pos.coords.altitude !== null && Number.isFinite(pos.coords.altitude);
+          setAltitudeValid(hasRealAlt);
+          const pt: GeoPoint = {
+            lat: pos.coords.latitude,
+            lng: pos.coords.longitude,
+            ele: hasRealAlt ? Math.round(pos.coords.altitude! * 10) / 10 : 0,
+            timestamp: pos.timestamp || Date.now(),
+            accuracy: pos.coords.accuracy,
+            speedMps: pos.coords.speed ?? 0,
+            heading: normalizeHeadingDegrees(pos.coords.heading),
+          };
+          setLiveGps(pt);
+          setNotice(null);
+          resolve(pt);
+        },
+        (err) => {
+          setNotice(`无法获取当前定位（${err.message}），请检查位置权限。`);
+          resolve(null);
+        },
+        { enableHighAccuracy: true, maximumAge: 10000, timeout: 10000 }
+      );
+    });
+  };
+
   const handleStart = () => {
     if (!('geolocation' in navigator)) {
       setNotice('当前浏览器无真实 GPS 硬件权限。');
@@ -235,6 +274,8 @@ export const MinimalRecordView: React.FC<MinimalRecordViewProps> = ({
           ele: hasRealAlt ? Math.round(pos.coords.altitude! * 10) / 10 : 0,
           timestamp: pos.timestamp || Date.now(),
           accuracy: pos.coords.accuracy,
+          speedMps: pos.coords.speed ?? 0,
+          heading: normalizeHeadingDegrees(pos.coords.heading),
         };
         setStartedAt(Date.now());
         setMovingMs(0);
@@ -326,12 +367,26 @@ export const MinimalRecordView: React.FC<MinimalRecordViewProps> = ({
         layers={MINIMAL_LAYERS}
         tracks={[]}
         activeRecordingPoints={points}
+        referencePoints={referenceRoute?.points ?? []}
         currentGps={liveGps}
+        onRequestLocate={handleRequestLocate}
       />
 
-      {notice && (
-        <div className="absolute top-3 left-3 right-16 z-10 max-w-md rounded-lg bg-[#F5F3EE]/95 dark:bg-[#141917]/95 border border-[#DFD9CE] dark:border-[#2B3530] px-3 py-2 text-xs text-[#1A211E] dark:text-[#ECEAE4]">
-          {notice}
+      {(notice || referenceRoute) && (
+        <div className="absolute top-3 left-3 right-20 z-10 max-w-md rounded-lg bg-[#F5F3EE]/95 dark:bg-[#141917]/95 border border-[#DFD9CE] dark:border-[#2B3530] px-3 py-2 text-xs text-[#1A211E] dark:text-[#ECEAE4] flex items-center justify-between gap-2">
+          <span className="truncate">
+            {notice || `参考轨迹：${referenceRoute?.title}`}
+          </span>
+          {!notice && referenceRoute && onClearReferenceRoute && (
+            <button
+              type="button"
+              onClick={onClearReferenceRoute}
+              aria-label="关闭参考轨迹"
+              className="text-[#6B736E] hover:text-[#1A211E] dark:hover:text-[#ECEAE4] cursor-pointer shrink-0"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          )}
         </div>
       )}
 

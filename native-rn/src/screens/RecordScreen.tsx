@@ -45,8 +45,13 @@ export const RecordScreen: React.FC<RecordScreenProps> = ({
   useEffect(() => {
     const unsub = trackRecorder.subscribe(setTelemetry);
     trackRecorder.recoverInterruptedTrack();
-    trackRecorder.refreshCurrentPosition();
-    return unsub;
+    trackRecorder.refreshCurrentPosition().then(() => {
+      trackRecorder.startHeadingWatch();
+    });
+    return () => {
+      trackRecorder.stopHeadingWatch();
+      unsub();
+    };
   }, []);
 
   const handleStart = async () => {
@@ -103,9 +108,14 @@ export const RecordScreen: React.FC<RecordScreenProps> = ({
       <MapScreen
         points={telemetry.points}
         currentLocation={telemetry.currentLocation}
+        headingDegrees={telemetry.headingDegrees}
         referenceCoordinates={referenceGuide?.coordinates ?? null}
         darkMode={darkMode}
-        onPressLocate={() => trackRecorder.refreshCurrentPosition()}
+        onPressLocate={async () => {
+          const pos = await trackRecorder.refreshCurrentPosition();
+          await trackRecorder.startHeadingWatch();
+          return pos;
+        }}
       />
 
       {/* Minimal Status / Reference Route / Camera Feedback Notice */}
@@ -272,7 +282,7 @@ const styles = StyleSheet.create({
     position: 'absolute',
     top: 56,
     left: 16,
-    right: 92,
+    right: 100,
     paddingHorizontal: 12,
     paddingVertical: 8,
     borderRadius: 10,

@@ -18,6 +18,7 @@ export interface RecorderTelemetry {
   avgSpeedKmh: number;
   currentAltitudeMeters: number | null;
   currentLocation: { latitude: number; longitude: number; accuracy: number | null } | null;
+  headingDegrees: number | null;
   points: TrackPoint[];
   errorMessage: string | null;
 }
@@ -37,12 +38,14 @@ class TrackRecorderService {
     avgSpeedKmh: 0,
     currentAltitudeMeters: null,
     currentLocation: null,
+    headingDegrees: null,
     points: [],
     errorMessage: null,
   };
 
   private listeners = new Set<Listener>();
   private foregroundSub: Location.LocationSubscription | null = null;
+  private headingSub: Location.LocationSubscription | null = null;
   private movingTimer: ReturnType<typeof setInterval> | null = null;
   private segmentId: string | null = null;
   private versionId: string | null = null;
@@ -71,28 +74,91 @@ class TrackRecorderService {
     return (distanceMeters / (movingTimeMs / 1000)) * 3.6;
   }
 
-  async refreshCurrentPosition(): Promise<boolean> {
-    const fg = await Location.requestForegroundPermissionsAsync();
-    if (fg.status !== 'granted') {
-      this.emit({ errorMessage: '未授予位置权限，请在系统设置中开启定位权限。' });
-      return false;
-    }
-    const loc = await Location.getCurrentPositionAsync({
-      accuracy: Location.Accuracy.High,
-    });
-    this.emit({
-      currentLocation: {
+  async refreshCurrentPosition(): Promise<{
+    latitude: number;
+    longitude: number;
+    accuracy: number | null;
+  } | null> {
+    try {
+      const fg = await Location.requestForegroundPermissionsAsync();
+      if (fg.status !== 'granted') {
+        this.emit({ errorMessage: '未授予位置权限，请在系统设置中开启定位权限。' });
+        return null;
+      }
+
+      let loc: Location.LocationObject | null = null;
+      try {
+        loc = await Location.getCurrentPositionAsync({
+          accuracy: Location.Accuracy.High,
+        });
+      } catch {
+        loc = await Location.getLastKnownPositionAsync();
+      }
+
+      if (!loc) {
+        this.emit({ errorMessage: '暂未获取到有效 GPS 信号，请移步开阔地带重试。' });
+        return null;
+      }
+
+      const nextLocation = {
         latitude: loc.coords.latitude,
         longitude: loc.coords.longitude,
         accuracy: loc.coords.accuracy ?? null,
-      },
-      currentAltitudeMeters:
-        typeof loc.coords.altitude === 'number' && Number.isFinite(loc.coords.altitude)
-          ? loc.coords.altitude
-          : null,
-      errorMessage: null,
-    });
-    return true;
+      };
+      const rawHeading = loc.coords.heading;
+      const gpsCourse =
+        typeof rawHeading === 'number' && Number.isFinite(rawHeading) && rawHeading >= 0
+          ? ((rawHeading % 360) + 360) % 360
+          : null;
+
+      this.emit({
+        currentLocation: nextLocation,
+        currentAltitudeMeters:
+          typeof loc.coords.altitude === 'number' && Number.isFinite(loc.coords.altitude)
+            ? loc.coords.altitude
+            : null,
+        headingDegrees: this.state.headingDegrees ?? gpsCourse,
+        errorMessage: null,
+      });
+      return nextLocation;
+    } catch {
+      this.emit({ errorMessage: '定位服务暂时不可用，请确认系统定位开关已开启。' });
+      return null;
+    }
+  }
+
+  async startHeadingWatch(): Promise<void> {
+    if (this.headingSub) return;
+    try {
+      const fg = await Location.getForegroundPermissionsAsync();
+      if (fg.status !== 'granted') return;
+
+      this.headingSub = await Location.watchHeadingAsync((heading) => {
+        const raw =
+          heading.trueHeading >= 0
+            ? heading.trueHeading
+            : heading.magHeading >= 0
+              ? heading.magHeading
+              : null;
+        if (raw === null || !Number.isFinite(raw)) return;
+        const normalized = ((raw % 360) + 360) % 360;
+        const prev = this.state.headingDegrees;
+        if (prev !== null) {
+          const angularDiff = Math.abs(((normalized - prev + 540) % 360) - 180);
+          if (angularDiff < 2) return;
+        }
+        this.emit({ headingDegrees: normalized });
+      });
+    } catch {
+      // Compass sensor unavailable on device/simulator; GPS course fallback remains active.
+    }
+  }
+
+  stopHeadingWatch(): void {
+    if (this.headingSub) {
+      this.headingSub.remove();
+      this.headingSub = null;
+    }
   }
 
   async recoverInterruptedTrack(): Promise<void> {
@@ -216,8 +282,8 @@ class TrackRecorderService {
     const db = await openTrailDatabase();
     await db.withTransactionAsync(async () => {
       await db.runAsync(
-        `INSERT INTO tracks (id, name, description, color, started_at, status, active_version_id)
-         VALUES (?, ?, '', '#B84F24', ?, 'recording', ?)`,
+        `INSERT INTO tracks (id, name, description, color, started_at, status, active_version_id, source)
+         VALUES (?, ?, '', '#B84F24', ?, 'recording', ?, 'recorded')`,
         [trackId, `徒步记录 ${new Date(now).toLocaleDateString('zh-CN')}`, now, versionId]
       );
       await db.runAsync(
@@ -324,6 +390,12 @@ class TrackRecorderService {
             ? loc.coords.altitude
             : null;
 
+        const rawHeading = loc.coords.heading;
+        const gpsCourse =
+          typeof rawHeading === 'number' && Number.isFinite(rawHeading) && rawHeading >= 0
+            ? ((rawHeading % 360) + 360) % 360
+            : null;
+
         this.emit({
           currentLocation: {
             latitude: loc.coords.latitude,
@@ -331,6 +403,9 @@ class TrackRecorderService {
             accuracy: loc.coords.accuracy ?? null,
           },
           currentAltitudeMeters: alt,
+          ...(this.state.headingDegrees === null && gpsCourse !== null
+            ? { headingDegrees: gpsCourse }
+            : {}),
         });
 
         const persisted = await persistGpsSampleToSqlite(loc);

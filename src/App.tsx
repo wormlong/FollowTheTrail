@@ -3,23 +3,18 @@ import { Compass, Moon, Navigation, Sun, User } from 'lucide-react';
 import { MinimalDiscoverView } from './components/MinimalDiscoverView';
 import { MinimalMeView } from './components/MinimalMeView';
 import { MinimalRecordView } from './components/MinimalRecordView';
-import { RouteDetailModal } from './components/RouteDetailModal';
-import { CURATED_ROUTES } from './data/routes';
-import { AppTab, GeoPoint, HikingRoute, RecordedTrack } from './types/hiking';
+import { AppTab, GeoPoint, RecordedTrack } from './types/hiking';
 import {
   deleteOfflineTrack,
   getAllOfflineTracks,
-  getCachedRouteIds,
   saveOfflineTrack,
-  toggleCachedRoute,
 } from './utils/offlineDb';
 
 export function App() {
   // Default entry is Record (Full-Screen Map + Start Hiking)
   const [activeTab, setActiveTab] = useState<AppTab>('record');
   const [meSection, setMeSection] = useState<'menu' | 'tracks' | 'archive' | 'native'>('menu');
-  const [selectedRoute, setSelectedRoute] = useState<HikingRoute | null>(null);
-  const [cachedRouteIds, setCachedRouteIds] = useState<Set<string>>(new Set());
+  const [referenceTrack, setReferenceTrack] = useState<RecordedTrack | null>(null);
   const [tracks, setTracks] = useState<RecordedTrack[]>([]);
   const [currentGps, setCurrentGps] = useState<GeoPoint | null>(null);
   const [darkMode, setDarkMode] = useState(false);
@@ -29,7 +24,6 @@ export function App() {
   }, [darkMode]);
 
   useEffect(() => {
-    getCachedRouteIds().then((ids) => setCachedRouteIds(new Set(ids)));
     getAllOfflineTracks().then(setTracks);
   }, []);
 
@@ -44,18 +38,13 @@ export function App() {
   const handleDeleteTrack = async (trackId: string) => {
     await deleteOfflineTrack(trackId);
     setTracks((prev) => prev.filter((t) => t.id !== trackId));
+    if (referenceTrack?.id === trackId) {
+      setReferenceTrack(null);
+    }
   };
 
-  const handleToggleRouteCache = async (routeId: string) => {
-    const nextCached = !cachedRouteIds.has(routeId);
-    await toggleCachedRoute(routeId, nextCached);
-    setCachedRouteIds((prev) => {
-      const next = new Set(prev);
-      if (nextCached) next.add(routeId);
-      else next.delete(routeId);
-      return next;
-    });
-  };
+  const importedTracks = tracks.filter((t) => Boolean(t.isTemporaryImport));
+  const recordedTracks = tracks.filter((t) => !t.isTemporaryImport);
 
   return (
     <div className="min-h-screen bg-[#F5F3EE] dark:bg-[#121715] text-[#1A211E] dark:text-[#ECEAE4]">
@@ -125,14 +114,24 @@ export function App() {
       <main className="max-w-7xl mx-auto px-3 sm:px-6 pt-3 sm:pt-4 pb-20 md:pb-6">
         {activeTab === 'discover' && (
           <MinimalDiscoverView
-            routes={CURATED_ROUTES}
-            onSelectRoute={setSelectedRoute}
-            onOpenOnMap={() => setActiveTab('record')}
+            importedTracks={importedTracks}
+            onImportTrack={handleSaveTrack}
+            onDeleteTrack={handleDeleteTrack}
+            onOpenOnMap={(track) => {
+              setReferenceTrack(track);
+              setActiveTab('record');
+            }}
           />
         )}
 
         {activeTab === 'record' && (
           <MinimalRecordView
+            referenceRoute={
+              referenceTrack
+                ? { id: referenceTrack.id, title: referenceTrack.name, points: referenceTrack.points }
+                : null
+            }
+            onClearReferenceRoute={() => setReferenceTrack(null)}
             onTrackCompleted={handleSaveTrack}
             onViewCompletedTrack={() => {
               setMeSection('tracks');
@@ -144,7 +143,7 @@ export function App() {
 
         {activeTab === 'me' && (
           <MinimalMeView
-            tracks={tracks}
+            tracks={recordedTracks}
             currentGps={currentGps}
             initialSection={meSection}
             onSaveTrack={handleSaveTrack}
@@ -153,17 +152,6 @@ export function App() {
           />
         )}
       </main>
-
-      <RouteDetailModal
-        route={selectedRoute}
-        isCached={selectedRoute ? cachedRouteIds.has(selectedRoute.id) : false}
-        onToggleCache={handleToggleRouteCache}
-        onClose={() => setSelectedRoute(null)}
-        onStartHike={() => {
-          setSelectedRoute(null);
-          setActiveTab('record');
-        }}
-      />
 
       {/* Minimalist 3-Tab Bottom Navigation with Elevated Center Forest-Green Record Button */}
       <nav

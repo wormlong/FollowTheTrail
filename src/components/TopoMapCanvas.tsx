@@ -1,16 +1,35 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Compass, LocateFixed, Minus, Plus } from 'lucide-react';
-import { GeoPoint, MapStyleMode, TrailWaypoint } from '../types/hiking';
+import { Check, Compass, Layers, LocateFixed, Minus, Plus } from 'lucide-react';
+import { GeoPoint, MapLayersState, MapStyleMode, TrailWaypoint } from '../types/hiking';
+import {
+  normalizeHeadingDegrees,
+  requestCompassPermissionIfNeeded,
+  useCompassHeading,
+} from '../utils/compassHeading';
 
 interface TopoMapCanvasProps {
   referencePath?: GeoPoint[];
   recordedPath?: GeoPoint[];
   waypoints?: TrailWaypoint[];
   currentPosition?: GeoPoint | null;
+  headingDegrees?: number | null;
+  layers?: MapLayersState;
   styleMode?: MapStyleMode;
   compact?: boolean;
   onSelectWaypoint?: (wp: TrailWaypoint) => void;
+  onToggleLayer?: (key: 'baseOutdoor' | 'contours' | 'satellite' | 'hillshade') => void;
+  onRequestLocate?: () => Promise<GeoPoint | null>;
 }
+
+const FALLBACK_OVERLAY_OPTIONS: Array<{
+  key: 'baseOutdoor' | 'contours' | 'satellite' | 'hillshade';
+  label: string;
+}> = [
+  { key: 'baseOutdoor', label: '基础户外地图' },
+  { key: 'contours', label: '等高线图层' },
+  { key: 'satellite', label: '卫星影像' },
+  { key: 'hillshade', label: '地形阴影' },
+];
 
 function latLngToWorld(lat: number, lng: number, zoom: number) {
   const scale = 256 * Math.pow(2, zoom);
@@ -25,14 +44,26 @@ export const TopoMapCanvas: React.FC<TopoMapCanvasProps> = ({
   recordedPath = [],
   waypoints = [],
   currentPosition = null,
+  headingDegrees = null,
+  layers,
   styleMode = 'topo',
   compact = false,
+  onToggleLayer,
+  onRequestLocate,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ width: 640, height: 420 });
   const [zoom, setZoom] = useState<number>(14.2);
+  const [overlayMenuOpen, setOverlayMenuOpen] = useState(false);
+  const [localPosition, setLocalPosition] = useState<GeoPoint | null>(null);
+  const effectivePosition = currentPosition ?? localPosition;
+  const compassHeading = useCompassHeading();
+  const effectiveHeading =
+    normalizeHeadingDegrees(headingDegrees) ??
+    compassHeading ??
+    normalizeHeadingDegrees(effectivePosition?.heading);
   const [center, setCenter] = useState<{ lat: number; lng: number }>(() => {
-    const first = currentPosition || recordedPath[0] || referencePath[0];
+    const first = effectivePosition || recordedPath[0] || referencePath[0];
     return first ? { lat: first.lat, lng: first.lng } : { lat: 39.9942, lng: 116.178 };
   });
   const [userPanned, setUserPanned] = useState(false);
@@ -128,16 +159,27 @@ export const TopoMapCanvas: React.FC<TopoMapCanvasProps> = ({
     return [peak, secondary];
   }, [referencePath, recordedPath, center.lat, center.lng]);
 
-  // OSM tiles when styleMode === 'osm'
-  const osmTiles = useMemo(() => {
-    if (styleMode !== 'osm') return [];
+  // Raster tiles when osm / satellite / contours active
+  const tileOverlayUrls = useMemo(() => {
+    const showSat = layers?.satellite ?? false;
+    const showOsm = layers?.baseOutdoor ?? styleMode === 'osm';
+    const showContours = layers?.contours ?? false;
+    if (!showSat && !showOsm && !showContours) return [];
     const tileZoom = Math.max(10, Math.min(17, Math.round(zoom)));
     const scale = Math.pow(2, tileZoom);
     const cWorld = latLngToWorld(center.lat, center.lng, tileZoom);
     const centerTileX = Math.floor((cWorld.x / (256 * scale)) * scale);
     const centerTileY = Math.floor((cWorld.y / (256 * scale)) * scale);
     const zoomDiff = Math.pow(2, zoom - tileZoom);
-    const tiles: Array<{ url: string; left: number; top: number; size: number; key: string }> = [];
+    const tiles: Array<{
+      baseUrl: string | null;
+      satUrl: string | null;
+      contourUrl: string | null;
+      left: number;
+      top: number;
+      size: number;
+      key: string;
+    }> = [];
 
     for (let dx = -2; dx <= 2; dx++) {
       for (let dy = -2; dy <= 2; dy++) {
@@ -151,7 +193,11 @@ export const TopoMapCanvas: React.FC<TopoMapCanvasProps> = ({
         const tileSize = 256 * zoomDiff;
         tiles.push({
           key: `${tileZoom}-${tx}-${ty}`,
-          url: `https://tile.openstreetmap.org/${tileZoom}/${tx}/${ty}.png`,
+          baseUrl: showOsm ? `https://tile.openstreetmap.org/${tileZoom}/${tx}/${ty}.png` : null,
+          satUrl: showSat
+            ? `https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/${tileZoom}/${ty}/${tx}`
+            : null,
+          contourUrl: showContours ? `https://tile.opentopomap.org/${tileZoom}/${tx}/${ty}.png` : null,
           left,
           top,
           size: tileSize,
@@ -159,7 +205,7 @@ export const TopoMapCanvas: React.FC<TopoMapCanvasProps> = ({
       }
     }
     return tiles;
-  }, [styleMode, zoom, center, size]);
+  }, [layers, styleMode, zoom, center, size]);
 
   const refPolyline = useMemo(
     () =>
@@ -215,9 +261,17 @@ export const TopoMapCanvas: React.FC<TopoMapCanvasProps> = ({
     dragRef.current.active = false;
   };
 
-  const handleRecenter = () => {
+  const handleRecenter = async () => {
     setUserPanned(false);
-    const target = currentPosition || recordedPath[recordedPath.length - 1] || referencePath[0];
+    setOverlayMenuOpen(false);
+    await requestCompassPermissionIfNeeded();
+    const fresh = await onRequestLocate?.();
+    if (fresh) {
+      setLocalPosition(fresh);
+      setCenter({ lat: fresh.lat, lng: fresh.lng });
+      return;
+    }
+    const target = effectivePosition || recordedPath[recordedPath.length - 1] || referencePath[0];
     if (target) {
       setCenter({ lat: target.lat, lng: target.lng });
     }
@@ -240,27 +294,68 @@ export const TopoMapCanvas: React.FC<TopoMapCanvasProps> = ({
         compact ? 'cursor-default' : 'cursor-grab active:cursor-grabbing'
       }`}
     >
-      {/* Optional OSM tile underlay (falls back gracefully to contours if offline) */}
-      {styleMode === 'osm' && (
-        <div className="absolute inset-0 pointer-events-none opacity-80">
-          {osmTiles.map((tile) => (
-            <img
-              key={tile.key}
-              src={tile.url}
-              alt=""
-              draggable={false}
-              referrerPolicy="no-referrer"
-              onError={(e) => {
-                (e.currentTarget as HTMLImageElement).style.display = 'none';
-              }}
-              style={{
-                position: 'absolute',
-                left: tile.left,
-                top: tile.top,
-                width: tile.size,
-                height: tile.size,
-              }}
-            />
+      {/* Raster tile overlays (OSM -> Satellite -> Contours) */}
+      {tileOverlayUrls.length > 0 && (
+        <div className="absolute inset-0 pointer-events-none">
+          {tileOverlayUrls.map((tile) => (
+            <React.Fragment key={tile.key}>
+              {tile.baseUrl && (
+                <img
+                  src={tile.baseUrl}
+                  alt=""
+                  draggable={false}
+                  referrerPolicy="no-referrer"
+                  onError={(e) => {
+                    (e.currentTarget as HTMLImageElement).style.display = 'none';
+                  }}
+                  style={{
+                    position: 'absolute',
+                    left: tile.left,
+                    top: tile.top,
+                    width: tile.size,
+                    height: tile.size,
+                    opacity: 0.9,
+                  }}
+                />
+              )}
+              {tile.satUrl && (
+                <img
+                  src={tile.satUrl}
+                  alt=""
+                  draggable={false}
+                  referrerPolicy="no-referrer"
+                  onError={(e) => {
+                    (e.currentTarget as HTMLImageElement).style.display = 'none';
+                  }}
+                  style={{
+                    position: 'absolute',
+                    left: tile.left,
+                    top: tile.top,
+                    width: tile.size,
+                    height: tile.size,
+                  }}
+                />
+              )}
+              {tile.contourUrl && (
+                <img
+                  src={tile.contourUrl}
+                  alt=""
+                  draggable={false}
+                  referrerPolicy="no-referrer"
+                  onError={(e) => {
+                    (e.currentTarget as HTMLImageElement).style.display = 'none';
+                  }}
+                  style={{
+                    position: 'absolute',
+                    left: tile.left,
+                    top: tile.top,
+                    width: tile.size,
+                    height: tile.size,
+                    opacity: layers?.satellite ? 0.48 : layers?.baseOutdoor ? 0.62 : 0.95,
+                  }}
+                />
+              )}
+            </React.Fragment>
           ))}
         </div>
       )}
@@ -277,8 +372,8 @@ export const TopoMapCanvas: React.FC<TopoMapCanvasProps> = ({
           return <line key={`gy-${idx}`} x1={0} y1={y} x2={size.width} y2={y} stroke={gridStroke} strokeWidth={1} />;
         })}
 
-        {/* Organic Topographic Contour Rings */}
-        {styleMode !== 'osm' &&
+        {/* Organic Topographic Contour Rings (when contour overlay enabled or offline fallback) */}
+        {(layers?.contours ?? styleMode !== 'osm') &&
           contourCenters.map((c, cIdx) => {
             const p = project(c.lat, c.lng);
             const rings = [1, 2, 3, 4, 5, 6, 7];
@@ -366,13 +461,23 @@ export const TopoMapCanvas: React.FC<TopoMapCanvasProps> = ({
           );
         })}
 
-        {/* Current Live GPS Position */}
-        {currentPosition && (() => {
-          const pt = project(currentPosition.lat, currentPosition.lng);
+        {/* Current Live GPS Position + Directional Heading Arrow */}
+        {effectivePosition && (() => {
+          const pt = project(effectivePosition.lat, effectivePosition.lng);
           return (
             <g transform={`translate(${pt.x}, ${pt.y})`}>
-              <circle r={18} fill="#C85324" opacity={0.16} />
+              <circle r={18} fill="#C85324" opacity={0.18} />
               <circle r={7} fill="#C85324" stroke="#FFFFFF" strokeWidth={2.5} />
+              {effectiveHeading !== null && (
+                <path
+                  d="M 0,-23 L 9,-10 L 0,-14 L -9,-10 Z"
+                  fill="#C85324"
+                  stroke="#FFFFFF"
+                  strokeWidth={2}
+                  strokeLinejoin="round"
+                  transform={`rotate(${effectiveHeading})`}
+                />
+              )}
             </g>
           );
         })()}
@@ -389,8 +494,58 @@ export const TopoMapCanvas: React.FC<TopoMapCanvasProps> = ({
         >
           <Compass className="w-3.5 h-3.5 text-[#B84F24]" />
           <span>
-            {(currentPosition?.lat ?? center.lat).toFixed(4)}°N, {(currentPosition?.lng ?? center.lng).toFixed(4)}°E
+            {(effectivePosition?.lat ?? center.lat).toFixed(4)}°N, {(effectivePosition?.lng ?? center.lng).toFixed(4)}°E
           </span>
+        </div>
+      )}
+
+      {/* Top-Right Overlay Switcher */}
+      {!compact && layers && onToggleLayer && (
+        <div className="absolute top-3 right-3 z-20 flex flex-col items-end gap-2">
+          <button
+            type="button"
+            onClick={() => setOverlayMenuOpen((v) => !v)}
+            aria-label="叠加图层"
+            className={`w-11 h-11 rounded-xl border shadow-sm flex items-center justify-center cursor-pointer ${
+              overlayMenuOpen
+                ? 'bg-[#1E352B] border-[#1E352B] text-white'
+                : isNight
+                  ? 'bg-[#1C2420]/90 border-white/10 text-[#ECEAE4]'
+                  : 'bg-white/95 border-[#DFD9CE] text-[#1E352B]'
+            }`}
+          >
+            <Layers className="w-4 h-4" />
+          </button>
+
+          {overlayMenuOpen && (
+            <div className="w-44 rounded-xl border border-[#DFD9CE] dark:border-[#2C3530] bg-white/95 dark:bg-[#1A211E]/95 backdrop-blur-md shadow-md overflow-hidden">
+              <div className="px-3 py-2 text-[11px] font-semibold text-[#5C655F] dark:text-[#9BA39E]">
+                地图图层叠加
+              </div>
+              {FALLBACK_OVERLAY_OPTIONS.map((opt) => {
+                const active = layers[opt.key];
+                return (
+                  <button
+                    key={opt.key}
+                    type="button"
+                    onClick={() => onToggleLayer(opt.key)}
+                    className="w-full px-3 h-10 border-t border-[#EAE5DC] dark:border-[#2A332E] flex items-center justify-between text-xs font-medium text-[#1A211E] dark:text-[#ECEAE4] hover:bg-[#FAF8F4] dark:hover:bg-[#232C28] cursor-pointer"
+                  >
+                    <span>{opt.label}</span>
+                    <span
+                      className={`w-4 h-4 rounded flex items-center justify-center border ${
+                        active
+                          ? 'bg-[#1E352B] border-[#1E352B] text-white'
+                          : 'border-[#B8C0BB] dark:border-[#4B5650]'
+                      }`}
+                    >
+                      {active && <Check className="w-3 h-3" />}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
         </div>
       )}
 

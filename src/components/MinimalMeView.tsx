@@ -25,6 +25,8 @@ export const MinimalMeView: React.FC<MinimalMeViewProps> = ({
   const [section, setSection] = useState<'menu' | 'tracks' | 'archive' | 'native'>(initialSection);
   const [selectedFile, setSelectedFile] = useState(ANDROID_SOURCE_FILES[0]);
 
+  const recordedTracks = tracks.filter((t) => !t.isTemporaryImport);
+
   if (section === 'tracks') {
     return (
       <div className="space-y-4">
@@ -37,7 +39,7 @@ export const MinimalMeView: React.FC<MinimalMeViewProps> = ({
           <span>返回我的</span>
         </button>
         <TracksWorkspaceView
-          tracks={tracks}
+          tracks={recordedTracks}
           onSaveTrack={onSaveTrack}
           onImportTrack={onImportTrack}
           onDeleteTrack={onDeleteTrack}
@@ -57,7 +59,7 @@ export const MinimalMeView: React.FC<MinimalMeViewProps> = ({
           <ArrowLeft className="w-4 h-4" />
           <span>返回我的</span>
         </button>
-        <MeArchiveSafetyView tracks={tracks} currentGps={currentGps} />
+        <MeArchiveSafetyView tracks={recordedTracks} currentGps={currentGps} />
       </div>
     );
   }
@@ -102,20 +104,20 @@ export const MinimalMeView: React.FC<MinimalMeViewProps> = ({
     );
   }
 
-  const totalKm = tracks.reduce((sum, t) => sum + t.distanceMeters / 1000, 0);
+  const totalKm = recordedTracks.reduce((sum, t) => sum + t.distanceMeters / 1000, 0);
 
   return (
     <div className="max-w-2xl mx-auto space-y-5 pb-24 md:pb-10">
       <div>
         <h1 className="text-xl font-semibold text-[#1A211E] dark:text-[#ECEAE4]">我的</h1>
         <p className="text-xs text-[#5C655F] dark:text-[#9BA39E] mt-0.5">
-          累计记录 {tracks.length} 条轨迹 · {totalKm.toFixed(1)} km
+          我的历史轨迹 {recordedTracks.length} 条 · {totalKm.toFixed(1)} km
         </p>
       </div>
 
       <div className="divide-y divide-[#E4DFD5] dark:divide-[#27312C] rounded-xl border border-[#DFD9CE] dark:border-[#2B3530] bg-white dark:bg-[#1A211E]">
         {[
-          { id: 'tracks', title: '历史轨迹与照片关联', sub: '查看详情、海拔联动、导入导出 GPX / ZIP' },
+          { id: 'tracks', title: `我的历史轨迹（${recordedTracks.length}）`, sub: '查看详情、海拔联动、照片关联与导出 GPX / ZIP' },
           { id: 'archive', title: '户外档案与安全设置', sub: '累计统计、照片墙、SOS 联系人与装备清单' },
           { id: 'native', title: '原生工程源码（native-rn / android）', sub: 'React Native + MapLibre Native + SQLite 实现' },
         ].map((item) => (

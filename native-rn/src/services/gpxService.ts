@@ -118,8 +118,8 @@ export async function importGpxXmlToDatabase(
         id, name, description, color, started_at, ended_at, distance_meters,
         moving_time_ms, total_time_ms, rest_time_ms, ascent_meters, descent_meters,
         max_altitude_meters, min_altitude_meters, max_speed_mps, avg_speed_mps,
-        status, active_version_id
-      ) VALUES (?, ?, '从 GPX 文件导入', '#2D6A4F', ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, 0, ?, 'completed', ?)`,
+        status, active_version_id, source
+      ) VALUES (?, ?, '从 GPX 文件导入', '#2D6A4F', ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, 0, ?, 'completed', ?, 'imported')`,
       [
         trackId,
         parsed.name,
@@ -158,6 +158,55 @@ export async function importGpxXmlToDatabase(
   });
 
   return { ok: true, trackId, pointCount: parsed.points.length };
+}
+
+export interface ImportedTrackGuide {
+  id: string;
+  title: string;
+  startedAt: number;
+  distanceKm: number;
+  ascentMeters: number;
+  pointCount: number;
+  coordinates: Array<[number, number]>;
+}
+
+export async function listImportedTracks(): Promise<ImportedTrackGuide[]> {
+  const db = await openTrailDatabase();
+  const rows = await db.getAllAsync<{
+    id: string;
+    name: string;
+    started_at: number;
+    distance_meters: number;
+    ascent_meters: number;
+  }>(
+    `SELECT id, name, started_at, distance_meters, ascent_meters
+     FROM tracks
+     WHERE source = 'imported' OR id LIKE 'imp-%'
+     ORDER BY started_at DESC`
+  );
+
+  const results: ImportedTrackGuide[] = [];
+  for (const row of rows) {
+    const pts = await db.getAllAsync<{ longitude: number; latitude: number }>(
+      `SELECT longitude, latitude FROM track_points WHERE track_id = ? ORDER BY seq ASC`,
+      [row.id]
+    );
+    results.push({
+      id: row.id,
+      title: row.name,
+      startedAt: row.started_at,
+      distanceKm: row.distance_meters / 1000,
+      ascentMeters: Math.round(row.ascent_meters),
+      pointCount: pts.length,
+      coordinates: pts.map((p) => [p.longitude, p.latitude]),
+    });
+  }
+  return results;
+}
+
+export async function deleteImportedTrack(trackId: string): Promise<void> {
+  const db = await openTrailDatabase();
+  await db.runAsync(`DELETE FROM tracks WHERE id = ?`, [trackId]);
 }
 
 export async function pickAndImportGpxFile(): Promise<{

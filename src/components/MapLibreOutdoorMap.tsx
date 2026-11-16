@@ -1,15 +1,19 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import * as maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
-import { Compass, LocateFixed } from 'lucide-react';
+import { Check, Compass, Layers, LocateFixed } from 'lucide-react';
 import {
   GeoPoint,
   MapLayersState,
   OfflineRegionPack,
-  RecordedTrack,
   TrailWaypoint,
   WAYPOINT_TYPE_LABELS,
 } from '../types/hiking';
+import {
+  normalizeHeadingDegrees,
+  requestCompassPermissionIfNeeded,
+  useCompassHeading,
+} from '../utils/compassHeading';
 import { TopoMapCanvas } from './TopoMapCanvas';
 
 export interface MapOverlayTrack {
@@ -32,11 +36,23 @@ interface MapLibreOutdoorMapProps {
   referencePoints?: GeoPoint[];
   waypoints?: TrailWaypoint[];
   currentGps?: GeoPoint | null;
+  headingDegrees?: number | null;
   cursorPoint?: GeoPoint | null;
   offlineRegions?: OfflineRegionPack[];
   onMapClickCoord?: (info: { lat: number; lng: number; eleEstimate: number | null }) => void;
   onSelectWaypoint?: (wp: TrailWaypoint) => void;
+  onRequestLocate?: () => Promise<GeoPoint | null>;
 }
+
+const OVERLAY_OPTIONS: Array<{
+  key: 'baseOutdoor' | 'contours' | 'satellite' | 'hillshade';
+  label: string;
+}> = [
+  { key: 'baseOutdoor', label: '基础户外地图' },
+  { key: 'contours', label: '等高线图层' },
+  { key: 'satellite', label: '卫星影像' },
+  { key: 'hillshade', label: '地形阴影' },
+];
 
 function isWebGLSupported(): boolean {
   try {
@@ -77,19 +93,39 @@ export const MapLibreOutdoorMap: React.FC<MapLibreOutdoorMapProps> = ({
   referencePoints = [],
   waypoints = [],
   currentGps = null,
+  headingDegrees = null,
   cursorPoint = null,
   offlineRegions = [],
   onMapClickCoord,
   onSelectWaypoint,
+  onRequestLocate,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
   const [webglReady] = useState<boolean>(() => isWebGLSupported());
   const [mapReady, setMapReady] = useState(false);
   const [bearing, setBearing] = useState(0);
+  const [layerState, setLayerState] = useState<MapLayersState>(layers);
+  const [overlayMenuOpen, setOverlayMenuOpen] = useState(false);
+  const [localGps, setLocalGps] = useState<GeoPoint | null>(null);
+  const [locateError, setLocateError] = useState<string | null>(null);
+  const compassHeading = useCompassHeading();
+
+  useEffect(() => {
+    setLayerState(layers);
+  }, [layers]);
+
+  const effectiveGps = currentGps ?? localGps;
+  const effectiveHeading = useMemo(
+    () =>
+      normalizeHeadingDegrees(headingDegrees) ??
+      compassHeading ??
+      normalizeHeadingDegrees(effectiveGps?.heading),
+    [headingDegrees, compassHeading, effectiveGps?.heading]
+  );
 
   const initialCenter = useMemo<[number, number]>(() => {
-    if (currentGps) return [currentGps.lng, currentGps.lat];
+    if (effectiveGps) return [effectiveGps.lng, effectiveGps.lat];
     const firstTrackPt = tracks.find((t) => t.visible && t.points.length > 0)?.points[0];
     if (firstTrackPt) return [firstTrackPt.lng, firstTrackPt.lat];
     if (referencePoints.length > 0) return [referencePoints[0].lng, referencePoints[0].lat];
@@ -143,10 +179,16 @@ export const MapLibreOutdoorMap: React.FC<MapLibreOutdoorMapProps> = ({
             layout: { visibility: 'visible' },
           },
           {
+            id: 'satellite-layer',
+            type: 'raster',
+            source: 'satelliteSource',
+            layout: { visibility: 'none' },
+          },
+          {
             id: 'topo-contours-layer',
             type: 'raster',
             source: 'openTopo',
-            paint: { 'raster-opacity': 0.72 },
+            paint: { 'raster-opacity': 0.62 },
             layout: { visibility: 'visible' },
           },
           {
@@ -154,16 +196,10 @@ export const MapLibreOutdoorMap: React.FC<MapLibreOutdoorMapProps> = ({
             type: 'raster',
             source: 'openTopo',
             paint: {
-              'raster-opacity': 0.25,
+              'raster-opacity': 0.22,
               'raster-contrast': 0.35,
             },
             layout: { visibility: 'visible' },
-          },
-          {
-            id: 'satellite-layer',
-            type: 'raster',
-            source: 'satelliteSource',
-            layout: { visibility: 'none' },
           },
         ],
       },
@@ -303,6 +339,31 @@ export const MapLibreOutdoorMap: React.FC<MapLibreOutdoorMapProps> = ({
         },
       });
 
+      // Register directional heading arrow sprite (@2x crisp 96x96)
+      if (!map.hasImage('gps-heading-arrow')) {
+        const spriteSize = 96;
+        const spriteCanvas = document.createElement('canvas');
+        spriteCanvas.width = spriteSize;
+        spriteCanvas.height = spriteSize;
+        const ctx = spriteCanvas.getContext('2d');
+        if (ctx) {
+          ctx.beginPath();
+          ctx.moveTo(48, 7);
+          ctx.lineTo(68, 33);
+          ctx.lineTo(48, 25);
+          ctx.lineTo(28, 33);
+          ctx.closePath();
+          ctx.lineJoin = 'round';
+          ctx.lineWidth = 4;
+          ctx.strokeStyle = '#FFFFFF';
+          ctx.stroke();
+          ctx.fillStyle = '#B84F24';
+          ctx.fill();
+          const imgData = ctx.getImageData(0, 0, spriteSize, spriteSize);
+          map.addImage('gps-heading-arrow', imgData, { pixelRatio: 2 });
+        }
+      }
+
       // Current GPS + Hover Elevation Cursor
       map.addSource('gps-and-cursor', {
         type: 'geojson',
@@ -329,6 +390,22 @@ export const MapLibreOutdoorMap: React.FC<MapLibreOutdoorMapProps> = ({
           'circle-color': '#B84F24',
           'circle-stroke-color': '#FFFFFF',
           'circle-stroke-width': 2.5,
+        },
+      });
+      map.addLayer({
+        id: 'gps-heading-arrow',
+        type: 'symbol',
+        source: 'gps-and-cursor',
+        filter: ['==', ['get', 'kind'], 'gps-heading'],
+        layout: {
+          'icon-image': 'gps-heading-arrow',
+          'icon-rotate': ['get', 'heading'],
+          'icon-rotation-alignment': 'map',
+          'icon-pitch-alignment': 'map',
+          'icon-size': 1.25,
+          'icon-anchor': 'center',
+          'icon-allow-overlap': true,
+          'icon-ignore-placement': true,
         },
       });
       map.addLayer({
@@ -384,14 +461,18 @@ export const MapLibreOutdoorMap: React.FC<MapLibreOutdoorMapProps> = ({
         map.setLayoutProperty(layerId, 'visibility', visible ? 'visible' : 'none');
       }
     };
-    setVis('osm-base-layer', layers.baseOutdoor);
-    setVis('topo-contours-layer', layers.contours);
-    setVis('hillshade-tint-layer', layers.hillshade);
-    setVis('satellite-layer', layers.satellite);
-    setVis('active-recording-line', layers.activeTrack);
-    setVis('trail-waypoints-circle', layers.waypoints);
-    setVis('trail-waypoints-label', layers.waypoints);
-  }, [layers, mapReady]);
+    setVis('osm-base-layer', layerState.baseOutdoor);
+    setVis('satellite-layer', layerState.satellite);
+    setVis('topo-contours-layer', layerState.contours);
+    if (map.getLayer('topo-contours-layer')) {
+      const opacity = layerState.satellite ? 0.48 : layerState.baseOutdoor ? 0.62 : 0.96;
+      map.setPaintProperty('topo-contours-layer', 'raster-opacity', opacity);
+    }
+    setVis('hillshade-tint-layer', layerState.hillshade);
+    setVis('active-recording-line', layerState.activeTrack);
+    setVis('trail-waypoints-circle', layerState.waypoints);
+    setVis('trail-waypoints-label', layerState.waypoints);
+  }, [layerState, mapReady]);
 
   // Sync tracks & overlay styles
   useEffect(() => {
@@ -401,8 +482,8 @@ export const MapLibreOutdoorMap: React.FC<MapLibreOutdoorMapProps> = ({
     const visibleFeatures = tracks
       .filter((t) => {
         if (!t.visible || t.points.length < 2) return false;
-        if (t.isTemporaryImport && !layers.importedTracks) return false;
-        if (!t.isTemporaryImport && t.isHistorical && !layers.historicalTracks) return false;
+        if (t.isTemporaryImport && !layerState.importedTracks) return false;
+        if (!t.isTemporaryImport && t.isHistorical && !layerState.historicalTracks) return false;
         return true;
       })
       .map((t) => ({
@@ -496,23 +577,30 @@ export const MapLibreOutdoorMap: React.FC<MapLibreOutdoorMapProps> = ({
           },
         })),
     });
-  }, [tracks, activeRecordingPoints, referencePoints, waypoints, offlineRegions, layers, mapReady]);
+  }, [tracks, activeRecordingPoints, referencePoints, waypoints, offlineRegions, layerState, mapReady]);
 
-  // Sync GPS & Elevation Hover Cursor
+  // Sync GPS, Heading Arrow & Elevation Hover Cursor
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !mapReady) return;
     const features: Array<{
       type: 'Feature';
-      properties: { kind: string };
+      properties: { kind: string; heading?: number };
       geometry: { type: 'Point'; coordinates: [number, number] };
     }> = [];
-    if (currentGps) {
+    if (effectiveGps) {
       features.push({
         type: 'Feature',
         properties: { kind: 'gps' },
-        geometry: { type: 'Point', coordinates: [currentGps.lng, currentGps.lat] },
+        geometry: { type: 'Point', coordinates: [effectiveGps.lng, effectiveGps.lat] },
       });
+      if (effectiveHeading !== null) {
+        features.push({
+          type: 'Feature',
+          properties: { kind: 'gps-heading', heading: effectiveHeading },
+          geometry: { type: 'Point', coordinates: [effectiveGps.lng, effectiveGps.lat] },
+        });
+      }
     }
     if (cursorPoint) {
       features.push({
@@ -525,7 +613,7 @@ export const MapLibreOutdoorMap: React.FC<MapLibreOutdoorMapProps> = ({
       type: 'FeatureCollection',
       features,
     });
-  }, [currentGps, cursorPoint, mapReady]);
+  }, [effectiveGps, effectiveHeading, cursorPoint, mapReady]);
 
   // Fit bounds when primary visible track changes
   const firstVisibleTrackId = tracks.find((t) => t.visible && t.points.length > 1)?.id;
@@ -542,6 +630,45 @@ export const MapLibreOutdoorMap: React.FC<MapLibreOutdoorMapProps> = ({
     map.fitBounds(bounds, { padding: 48, duration: 350, maxZoom: 15 });
   }, [firstVisibleTrackId, referencePoints.length, mapReady]);
 
+  const toggleOverlay = (key: 'baseOutdoor' | 'contours' | 'satellite' | 'hillshade') => {
+    setLayerState((prev) => ({ ...prev, [key]: !prev[key] }));
+  };
+
+  const fetchBrowserGps = (): Promise<GeoPoint | null> => {
+    if (onRequestLocate) {
+      return onRequestLocate();
+    }
+    return new Promise((resolve) => {
+      if (!('geolocation' in navigator)) {
+        setLocateError('当前环境不支持真实定位');
+        resolve(null);
+        return;
+      }
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          const hasAlt = pos.coords.altitude !== null && Number.isFinite(pos.coords.altitude);
+          const pt: GeoPoint = {
+            lat: pos.coords.latitude,
+            lng: pos.coords.longitude,
+            ele: hasAlt ? Math.round(pos.coords.altitude! * 10) / 10 : 0,
+            timestamp: pos.timestamp || Date.now(),
+            accuracy: pos.coords.accuracy,
+            speedMps: pos.coords.speed ?? 0,
+            heading: normalizeHeadingDegrees(pos.coords.heading),
+          };
+          setLocalGps(pt);
+          setLocateError(null);
+          resolve(pt);
+        },
+        () => {
+          setLocateError('无法获取当前位置，请检查定位权限');
+          resolve(null);
+        },
+        { enableHighAccuracy: true, maximumAge: 10000, timeout: 10000 }
+      );
+    });
+  };
+
   // Graceful fallback to vector TopoMapCanvas if WebGL is unavailable
   if (!webglReady) {
     const primaryRec =
@@ -553,21 +680,33 @@ export const MapLibreOutdoorMap: React.FC<MapLibreOutdoorMapProps> = ({
         referencePath={referencePoints}
         recordedPath={primaryRec}
         waypoints={waypoints}
-        currentPosition={cursorPoint || currentGps}
-        styleMode={layers.satellite ? 'night' : 'topo'}
+        currentPosition={cursorPoint || effectiveGps}
+        headingDegrees={effectiveHeading}
+        layers={layerState}
+        onToggleLayer={toggleOverlay}
+        onRequestLocate={async () => {
+          await requestCompassPermissionIfNeeded();
+          return fetchBrowserGps();
+        }}
+        styleMode={layerState.satellite ? 'night' : layerState.baseOutdoor ? 'osm' : 'topo'}
       />
     );
   }
 
-  const handleRecenter = () => {
+  const handleRecenter = async () => {
+    setOverlayMenuOpen(false);
+    await requestCompassPermissionIfNeeded();
     const map = mapRef.current;
-    if (!map) return;
-    if (currentGps) {
-      map.flyTo({ center: [currentGps.lng, currentGps.lat], zoom: 15, duration: 400 });
+    const fresh = await fetchBrowserGps();
+    const target = fresh || effectiveGps;
+    if (target) {
+      setLocalGps(target);
+      setLocateError(null);
+      map?.flyTo({ center: [target.lng, target.lat], zoom: 15.5, duration: 400 });
       return;
     }
     const pts = [...tracks.filter((t) => t.visible).flatMap((t) => t.points), ...referencePoints];
-    if (pts.length >= 2) {
+    if (pts.length >= 2 && map) {
       const bounds = new maplibregl.LngLatBounds();
       pts.forEach((p) => bounds.extend([p.lng, p.lat]));
       map.fitBounds(bounds, { padding: 48, duration: 350, maxZoom: 15 });
@@ -578,30 +717,82 @@ export const MapLibreOutdoorMap: React.FC<MapLibreOutdoorMapProps> = ({
     <div className="relative w-full h-full overflow-hidden bg-[#EFECE4]">
       <div ref={containerRef} className="w-full h-full" />
 
-      {/* Compass Reset & Locate Controls */}
-      <div className="absolute top-3 right-3 z-10 flex flex-col gap-2">
-        <button
-          type="button"
-          onClick={() => mapRef.current?.easeTo({ bearing: 0, pitch: 0, duration: 250 })}
-          title="指北回正"
-          aria-label="指南针指北"
-          className="w-11 h-11 rounded-xl bg-white/95 dark:bg-[#1A211E]/95 border border-[#DFD9CE] dark:border-[#2C3530] shadow-sm flex items-center justify-center cursor-pointer"
-        >
-          <Compass
-            className="w-4 h-4 text-[#1E352B] dark:text-[#ECEAE4] transition-transform"
-            style={{ transform: `rotate(${-bearing}deg)` }}
-          />
-        </button>
+      {locateError && !onRequestLocate && (
+        <div className="absolute top-3 left-3 right-20 z-10 max-w-xs rounded-lg bg-[#F5F3EE]/95 dark:bg-[#141917]/95 border border-[#DFD9CE] dark:border-[#2B3530] px-3 py-2 text-xs text-[#1A211E] dark:text-[#ECEAE4]">
+          {locateError}
+        </div>
+      )}
 
-        <button
-          type="button"
-          onClick={handleRecenter}
-          title="回到当前位置 / 轨迹范围"
-          aria-label="定位回中"
-          className="w-11 h-11 rounded-xl bg-white/95 dark:bg-[#1A211E]/95 border border-[#DFD9CE] dark:border-[#2C3530] shadow-sm flex items-center justify-center cursor-pointer"
-        >
-          <LocateFixed className="w-4 h-4 text-[#B84F24]" />
-        </button>
+      {/* Top-Right Controls: Overlay Switcher, Compass Reset, Locate */}
+      <div className="absolute top-3 right-3 z-20 flex flex-col items-end gap-2">
+        <div className="flex flex-col gap-2">
+          <button
+            type="button"
+            onClick={() => setOverlayMenuOpen((v) => !v)}
+            title="地图图层叠加"
+            aria-label="叠加图层"
+            className={`w-11 h-11 rounded-xl border shadow-sm flex items-center justify-center cursor-pointer transition-colors ${
+              overlayMenuOpen
+                ? 'bg-[#1E352B] border-[#1E352B] text-white'
+                : 'bg-white/95 dark:bg-[#1A211E]/95 border-[#DFD9CE] dark:border-[#2C3530] text-[#1E352B] dark:text-[#ECEAE4]'
+            }`}
+          >
+            <Layers className="w-4 h-4" />
+          </button>
+
+          <button
+            type="button"
+            onClick={() => mapRef.current?.easeTo({ bearing: 0, pitch: 0, duration: 250 })}
+            title="指北回正"
+            aria-label="指南针指北"
+            className="w-11 h-11 rounded-xl bg-white/95 dark:bg-[#1A211E]/95 border border-[#DFD9CE] dark:border-[#2C3530] shadow-sm flex items-center justify-center cursor-pointer"
+          >
+            <Compass
+              className="w-4 h-4 text-[#1E352B] dark:text-[#ECEAE4] transition-transform"
+              style={{ transform: `rotate(${-bearing}deg)` }}
+            />
+          </button>
+
+          <button
+            type="button"
+            onClick={handleRecenter}
+            title="定位当前位置"
+            aria-label="定位回中"
+            className="w-11 h-11 rounded-xl bg-white/95 dark:bg-[#1A211E]/95 border border-[#DFD9CE] dark:border-[#2C3530] shadow-sm flex items-center justify-center cursor-pointer"
+          >
+            <LocateFixed className="w-4 h-4 text-[#B84F24]" />
+          </button>
+        </div>
+
+        {overlayMenuOpen && (
+          <div className="w-44 rounded-xl border border-[#DFD9CE] dark:border-[#2C3530] bg-white/95 dark:bg-[#1A211E]/95 backdrop-blur-md shadow-md overflow-hidden">
+            <div className="px-3 py-2 text-[11px] font-semibold text-[#5C655F] dark:text-[#9BA39E]">
+              地图图层叠加
+            </div>
+            {OVERLAY_OPTIONS.map((opt) => {
+              const active = layerState[opt.key];
+              return (
+                <button
+                  key={opt.key}
+                  type="button"
+                  onClick={() => toggleOverlay(opt.key)}
+                  className="w-full px-3 h-10 border-t border-[#EAE5DC] dark:border-[#2A332E] flex items-center justify-between text-xs font-medium text-[#1A211E] dark:text-[#ECEAE4] hover:bg-[#FAF8F4] dark:hover:bg-[#232C28] cursor-pointer"
+                >
+                  <span>{opt.label}</span>
+                  <span
+                    className={`w-4 h-4 rounded flex items-center justify-center border ${
+                      active
+                        ? 'bg-[#1E352B] border-[#1E352B] text-white'
+                        : 'border-[#B8C0BB] dark:border-[#4B5650]'
+                    }`}
+                  >
+                    {active && <Check className="w-3 h-3" />}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        )}
       </div>
     </div>
   );

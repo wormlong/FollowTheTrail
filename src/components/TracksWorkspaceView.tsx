@@ -12,7 +12,6 @@ import {
   Share2,
   Trash2,
   Undo2,
-  Upload,
 } from 'lucide-react';
 import {
   GeoPoint,
@@ -30,10 +29,9 @@ import {
   exportTrackToGpx,
   formatDuration,
   formatSpeedKmh,
-  parseTrackFile,
 } from '../utils/elevationMath';
 import { processAndMatchPhoto } from '../utils/photoMatcher';
-import { exportFollowTheTrailZip, importFollowTheTrailZip } from '../utils/zipArchive';
+import { exportFollowTheTrailZip } from '../utils/zipArchive';
 import { LinkedElevationChart } from './LinkedElevationChart';
 import { MapLibreOutdoorMap } from './MapLibreOutdoorMap';
 import { SharePosterModal } from './SharePosterModal';
@@ -75,7 +73,6 @@ export const TracksWorkspaceView: React.FC<TracksWorkspaceViewProps> = ({
   const [newWptType, setNewWptType] = useState<WaypointType>('scenic');
   const [newWptNote, setNewWptNote] = useState('');
 
-  const importInputRef = useRef<HTMLInputElement>(null);
   const photoInputRef = useRef<HTMLInputElement>(null);
 
   const selectedTrack = tracks.find((t) => t.id === selectedId) || tracks[0] || null;
@@ -83,34 +80,6 @@ export const TracksWorkspaceView: React.FC<TracksWorkspaceViewProps> = ({
     () => (selectedTrack ? computeTrackStats(selectedTrack.points) : null),
     [selectedTrack]
   );
-
-  const handleImportFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    if (file.name.toLowerCase().endsWith('.zip')) {
-      const importedZip = await importFollowTheTrailZip(file);
-      if (importedZip) {
-        onImportTrack(importedZip);
-        setSelectedId(importedZip.id);
-        setNotice(`已完整还原 ZIP 记忆数据包「${importedZip.name}」（含 ${importedZip.photos.length} 张照片与标注）`);
-      } else {
-        setNotice('ZIP 数据包解析失败，请确认包含 track.gpx 与 manifest.json');
-      }
-      e.target.value = '';
-      return;
-    }
-
-    const text = await file.text();
-    const parsed = parseTrackFile(file.name, text);
-    if (parsed) {
-      onImportTrack(parsed);
-      setSelectedId(parsed.id);
-      setNotice(`已导入轨迹「${parsed.name}」（${parsed.points.length} 个点）`);
-    } else {
-      setNotice('轨迹文件解析失败，支持 GPX / KML / GeoJSON / FOLLOW_THE_TRAIL.zip');
-    }
-    e.target.value = '';
-  };
 
   const handleUploadPhotos = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!selectedTrack || !e.target.files?.length) return;
@@ -258,31 +227,11 @@ export const TracksWorkspaceView: React.FC<TracksWorkspaceViewProps> = ({
 
   return (
     <div className="space-y-5 pb-24 md:pb-12">
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-        <div>
-          <h1 className="text-xl sm:text-2xl font-semibold">轨迹与记忆库</h1>
-          <p className="text-xs sm:text-sm text-[#6B736E] dark:text-[#9BA39E] mt-0.5">
-            支持 GPX / KML / GeoJSON / FOLLOW_THE_TRAIL.zip 导入导出、联动海拔分析、照片 EXIF 自动匹配与无损编辑
-          </p>
-        </div>
-
-        <div>
-          <input
-            ref={importInputRef}
-            type="file"
-            accept=".gpx,.kml,.geojson,.json,.zip"
-            onChange={handleImportFile}
-            className="hidden"
-          />
-          <button
-            type="button"
-            onClick={() => importInputRef.current?.click()}
-            className="min-h-[44px] px-4 py-2 rounded-xl border border-[#DFD9CE] dark:border-[#2C3530] bg-white dark:bg-[#1A211E] text-sm font-medium inline-flex items-center gap-2 hover:bg-[#EFECE4] dark:hover:bg-[#232C28] whitespace-nowrap cursor-pointer"
-          >
-            <Upload className="w-4 h-4" />
-            <span>导入 GPX / KML / ZIP</span>
-          </button>
-        </div>
+      <div>
+        <h1 className="text-xl sm:text-2xl font-semibold">我的历史轨迹</h1>
+        <p className="text-xs sm:text-sm text-[#6B736E] dark:text-[#9BA39E] mt-0.5">
+          仅展示自己记录的徒步轨迹，支持导出 GPX / GeoJSON / ZIP、联动海拔分析与照片关联
+        </p>
       </div>
 
       {notice && (
@@ -291,6 +240,11 @@ export const TracksWorkspaceView: React.FC<TracksWorkspaceViewProps> = ({
         </div>
       )}
 
+      {tracks.length === 0 ? (
+        <div className="rounded-2xl border border-[#DFD9CE] dark:border-[#2C3530] bg-white dark:bg-[#1A211E] p-8 text-center text-xs text-[#6B736E] dark:text-[#9BA39E]">
+          暂无已保存的历史轨迹，请在「记录」页完成徒步记录后查看；导入的外部轨迹请前往「发现」查看。
+        </div>
+      ) : (
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
         {/* Track List */}
         <div className="lg:col-span-4 space-y-3">
@@ -810,6 +764,7 @@ export const TracksWorkspaceView: React.FC<TracksWorkspaceViewProps> = ({
           </div>
         )}
       </div>
+      )}
 
       <SharePosterModal track={posterTrack} onClose={() => setPosterTrack(null)} />
     </div>

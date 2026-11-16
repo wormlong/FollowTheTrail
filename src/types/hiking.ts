@@ -38,6 +38,7 @@ export interface GeoPoint {
   timestamp: number;
   accuracy?: number;
   speedMps?: number;
+  heading?: number | null;
 }
 
 export interface TrailWaypoint {

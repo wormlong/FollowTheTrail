@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import {
   FlatList,
   Image,
@@ -10,9 +10,10 @@ import {
   useColorScheme,
   View,
 } from 'react-native';
-import { ChevronRight, Download, Share2, Trash2, Upload, X } from 'lucide-react-native';
+import { useIsFocused } from '@react-navigation/native';
+import { ChevronRight, Download, Share2, Trash2, X } from 'lucide-react-native';
 import { openTrailDatabase } from '../db/schema';
-import { exportAndShareTrackGpx, pickAndImportGpxFile } from '../services/gpxService';
+import { exportAndShareTrackGpx } from '../services/gpxService';
 import {
   deleteOfflineRegionPack,
   downloadOfflineRegionPack,
@@ -53,6 +54,7 @@ export const MeScreen: React.FC<{ highlightedTrackId?: string | null }> = ({
 }) => {
   const scheme = useColorScheme();
   const theme = scheme === 'dark' ? OutdoorColors.dark : OutdoorColors.light;
+  const isFocused = useIsFocused();
   const [tracks, setTracks] = useState<TrackRow[]>([]);
   const [selectedTrack, setSelectedTrack] = useState<TrackRow | null>(null);
   const [selectedPhotos, setSelectedPhotos] = useState<TrackPhotoRow[]>([]);
@@ -62,22 +64,26 @@ export const MeScreen: React.FC<{ highlightedTrackId?: string | null }> = ({
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
   const [downloadProgress, setDownloadProgress] = useState<number>(0);
 
-  const reloadTracks = async (focusId?: string | null) => {
+  const reloadTracks = useCallback(async (focusId?: string | null) => {
     const db = await openTrailDatabase();
     const rows = await db.getAllAsync<TrackRow>(
       `SELECT id, name, started_at, distance_meters, moving_time_ms, avg_speed_mps, ascent_meters
-       FROM tracks ORDER BY started_at DESC`
+       FROM tracks
+       WHERE (source IS NULL OR source = 'recorded') AND id NOT LIKE 'imp-%'
+       ORDER BY started_at DESC`
     );
     setTracks(rows);
     if (focusId) {
       const match = rows.find((r) => r.id === focusId);
       if (match) setSelectedTrack(match);
     }
-  };
+  }, []);
 
   useEffect(() => {
-    reloadTracks(highlightedTrackId);
-  }, [highlightedTrackId]);
+    if (isFocused) {
+      reloadTracks(highlightedTrackId);
+    }
+  }, [isFocused, highlightedTrackId, reloadTracks]);
 
   useEffect(() => {
     if (!selectedTrack) {
@@ -101,16 +107,6 @@ export const MeScreen: React.FC<{ highlightedTrackId?: string | null }> = ({
       setDownloadedPackNames(new Set(packs.map((p) => p.name)));
     } catch {
       setDownloadedPackNames(new Set());
-    }
-  };
-
-  const handleImportGpx = async () => {
-    const res = await pickAndImportGpxFile();
-    if (res.status === 'imported' && res.trackId) {
-      await reloadTracks(res.trackId);
-      setStatusNotice(`已导入 GPX 轨迹（${res.pointCount ?? 0} 个轨迹点）`);
-    } else if (res.status === 'error') {
-      setStatusNotice(res.message || 'GPX 导入失败');
     }
   };
 
@@ -142,12 +138,8 @@ export const MeScreen: React.FC<{ highlightedTrackId?: string | null }> = ({
 
       <View style={styles.sectionHeaderRow}>
         <Text style={[styles.sectionTitle, { color: theme.textSecondary }]}>
-          历史轨迹（{tracks.length}）
+          我的历史轨迹（{tracks.length}）
         </Text>
-        <Pressable onPress={handleImportGpx} style={styles.importBtn}>
-          <Upload size={14} color={theme.primary} />
-          <Text style={[styles.importBtnText, { color: theme.primary }]}>导入 GPX</Text>
-        </Pressable>
       </View>
 
       {statusNotice && (
