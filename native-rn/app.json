@@ -1,0 +1,56 @@
+{
+  "expo": {
+    "name": "跟夕走",
+    "slug": "follow-the-trail",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "automatic",
+    "plugins": [
+      "./plugins/withAsciiGradleName",
+      "@maplibre/maplibre-react-native",
+      [
+        "expo-location",
+        {
+          "locationAlwaysAndWhenInUsePermission": "用于锁屏和后台持续记录徒步 GPS 轨迹与海拔数据。",
+          "isAndroidBackgroundLocationEnabled": true,
+          "isAndroidForegroundServiceEnabled": true
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "cameraPermission": "用于在徒步记录过程中调用系统相机拍照并保存至本地轨迹。",
+          "photosPermission": "读取照片 EXIF 时间与 GPS 坐标以关联轨迹位置。"
+        }
+      ],
+      [
+        "expo-media-library",
+        {
+          "photosPermission": "读取相册照片的 EXIF 时间与 GPS 位置，用于自动关联徒步记忆。"
+        }
+      ]
+    ],
+    "android": {
+      "package": "com.followthetrail.genxizou",
+      "permissions": [
+        "ACCESS_COARSE_LOCATION",
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_BACKGROUND_LOCATION",
+        "FOREGROUND_SERVICE",
+        "FOREGROUND_SERVICE_LOCATION",
+        "POST_NOTIFICATIONS",
+        "CAMERA",
+        "ACCESS_MEDIA_LOCATION"
+      ]
+    },
+    "ios": {
+      "bundleIdentifier": "com.followthetrail.genxizou",
+      "infoPlist": {
+        "UIBackgroundModes": ["location"],
+        "NSLocationWhenInUseUsageDescription": "用于在地图上显示当前位置并记录徒步轨迹。",
+        "NSLocationAlwaysAndWhenInUseUsageDescription": "用于在锁屏及切换应用后继续记录 GPS 徒步轨迹。",
+        "NSCameraUsageDescription": "用于在徒步途中拍摄照片并与轨迹点关联保存。"
+      }
+    }
+  }
+}

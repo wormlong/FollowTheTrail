@@ -1,0 +1,8 @@
+{
+  "name": "跟夕走 · 户外徒步",
+  "description": "简洁克制的户外徒步与离线轨迹记录应用，支持徒步路线浏览、地图导航、GPS 实时定位、海拔爬升统计与离线 GPX 轨迹记录，附带完整原生 Android Kotlin + Jetpack Compose 工程架构。",
+  "requestFramePermissions": [
+    "geolocation"
+  ],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
