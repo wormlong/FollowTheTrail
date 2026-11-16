@@ -1,7 +1,7 @@
 {
   "expo": {
     "name": "跟夕走",
-    "slug": "follow-the-trail",
+    "slug": "genxizou",
     "version": "1.0.0",
     "orientation": "portrait",
     "userInterfaceStyle": "automatic",
@@ -50,6 +50,11 @@
         "NSLocationWhenInUseUsageDescription": "用于在地图上显示当前位置并记录徒步轨迹。",
         "NSLocationAlwaysAndWhenInUseUsageDescription": "用于在锁屏及切换应用后继续记录 GPS 徒步轨迹。",
         "NSCameraUsageDescription": "用于在徒步途中拍摄照片并与轨迹点关联保存。"
+      }
+    },
+    "extra": {
+      "eas": {
+        "projectId": "9fa5e453-d4cb-47fe-b0d5-bdefe98ece0a"
       }
     }
   }
