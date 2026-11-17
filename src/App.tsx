@@ -153,38 +153,38 @@ export function App() {
         )}
       </main>
 
-      {/* Minimalist 3-Tab Bottom Navigation with Elevated Center Forest-Green Record Button */}
+      {/* Minimalist 3-Tab Bottom Navigation with Compact Flush Record Tab */}
       <nav
         aria-label="底部导航"
-        className="md:hidden fixed bottom-0 left-0 right-0 z-40 h-16 pb-safe bg-[#F5F3EE]/96 dark:bg-[#141917]/96 border-t border-[#DFD9CE] dark:border-[#2B3530] grid grid-cols-3 items-center"
+        className="md:hidden fixed bottom-0 left-0 right-0 z-40 h-14 pb-safe bg-[#F5F3EE]/96 dark:bg-[#141917]/96 border-t border-[#DFD9CE] dark:border-[#2B3530] grid grid-cols-3 items-center"
       >
         <button
           type="button"
           onClick={() => setActiveTab('discover')}
-          className={`min-h-[48px] flex flex-col items-center justify-center gap-0.5 cursor-pointer ${
+          className={`min-h-[44px] flex flex-col items-center justify-center gap-0.5 cursor-pointer ${
             activeTab === 'discover'
               ? 'text-[#1E352B] dark:text-[#9CC0AD]'
               : 'text-[#5C655F] dark:text-[#9BA39E]'
           }`}
         >
-          <Compass className="w-5 h-5" />
+          <Compass className="w-[18px] h-[18px]" />
           <span className="text-[11px] font-medium">发现</span>
         </button>
 
         <button
           type="button"
           onClick={() => setActiveTab('record')}
-          className="flex flex-col items-center justify-center cursor-pointer"
+          className="min-h-[44px] flex flex-col items-center justify-center gap-0.5 cursor-pointer"
         >
           <span
-            className={`w-12 h-12 -mt-4 rounded-full bg-[#1E352B] text-white flex items-center justify-center border-2 ${
-              activeTab === 'record' ? 'border-[#B84F24]' : 'border-[#F5F3EE] dark:border-[#141917]'
+            className={`w-7 h-7 rounded-full bg-[#1E352B] text-white flex items-center justify-center border ${
+              activeTab === 'record' ? 'border-[#B84F24]' : 'border-transparent'
             }`}
           >
-            <Navigation className="w-5 h-5" />
+            <Navigation className="w-3.5 h-3.5" />
           </span>
           <span
-            className={`text-[11px] font-medium mt-0.5 ${
+            className={`text-[11px] font-medium ${
               activeTab === 'record'
                 ? 'text-[#1E352B] dark:text-[#9CC0AD]'
                 : 'text-[#5C655F] dark:text-[#9BA39E]'
@@ -200,13 +200,13 @@ export function App() {
             setMeSection('menu');
             setActiveTab('me');
           }}
-          className={`min-h-[48px] flex flex-col items-center justify-center gap-0.5 cursor-pointer ${
+          className={`min-h-[44px] flex flex-col items-center justify-center gap-0.5 cursor-pointer ${
             activeTab === 'me'
               ? 'text-[#1E352B] dark:text-[#9CC0AD]'
               : 'text-[#5C655F] dark:text-[#9BA39E]'
           }`}
         >
-          <User className="w-5 h-5" />
+          <User className="w-[18px] h-[18px]" />
           <span className="text-[11px] font-medium">我的</span>
         </button>
       </nav>

@@ -23,7 +23,7 @@ export const RootNavigator: React.FC = () => {
         screenOptions={{
           headerShown: false,
           tabBarStyle: {
-            height: 64,
+            height: 58,
             backgroundColor: theme.surface,
             borderTopColor: theme.border,
             borderTopWidth: 1,
@@ -38,7 +38,7 @@ export const RootNavigator: React.FC = () => {
           name="Discover"
           options={{
             title: '发现',
-            tabBarIcon: ({ color, size }) => <Compass size={size} color={color} />,
+            tabBarIcon: ({ color }) => <Compass size={20} color={color} />,
           }}
         >
           {({ navigation }) => (
@@ -65,7 +65,7 @@ export const RootNavigator: React.FC = () => {
                   },
                 ]}
               >
-                <Navigation size={22} color="#FFFFFF" />
+                <Navigation size={15} color="#FFFFFF" />
               </View>
             ),
           }}
@@ -86,7 +86,7 @@ export const RootNavigator: React.FC = () => {
           name="Me"
           options={{
             title: '我的',
-            tabBarIcon: ({ color, size }) => <User size={size} color={color} />,
+            tabBarIcon: ({ color }) => <User size={20} color={color} />,
           }}
         >
           {() => <MeScreen highlightedTrackId={highlightedTrackId} />}
@@ -98,11 +98,10 @@ export const RootNavigator: React.FC = () => {
 
 const styles = StyleSheet.create({
   centerRecordButton: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
-    marginTop: -12,
-    borderWidth: 2,
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    borderWidth: 1.5,
     alignItems: 'center',
     justifyContent: 'center',
   },

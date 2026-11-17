@@ -10,8 +10,8 @@ interface LongPressFinishButtonProps {
 
 const HOLD_DURATION_MS = 1500;
 const TICK_MS = 30;
-const RING_SIZE = 44;
-const STROKE_WIDTH = 3;
+const RING_SIZE = 34;
+const STROKE_WIDTH = 2.5;
 const RADIUS = (RING_SIZE - STROKE_WIDTH) / 2;
 const CIRCUMFERENCE = 2 * Math.PI * RADIUS;
 
@@ -131,14 +131,14 @@ export const LongPressFinishButton: React.FC<LongPressFinishButtonProps> = ({
 const styles = StyleSheet.create({
   button: {
     flex: 1,
-    height: 50,
+    height: 46,
     borderRadius: 12,
     borderWidth: 1.25,
     backgroundColor: 'rgba(255, 255, 255, 0.94)',
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 8,
+    gap: 7,
     paddingHorizontal: 10,
   },
   ringWrap: {
@@ -149,8 +149,8 @@ const styles = StyleSheet.create({
   },
   stopSquare: {
     position: 'absolute',
-    width: 12,
-    height: 12,
+    width: 9,
+    height: 9,
     borderRadius: 2,
   },
   label: {

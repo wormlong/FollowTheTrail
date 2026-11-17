@@ -12,6 +12,7 @@ export type RecorderLifecycle = 'idle' | 'recording' | 'paused' | 'completed';
 
 export interface RecorderTelemetry {
   status: RecorderLifecycle;
+  starting: boolean;
   trackId: string | null;
   distanceMeters: number;
   movingTimeMs: number;
@@ -32,6 +33,7 @@ function makeUuid(prefix: string): string {
 class TrackRecorderService {
   private state: RecorderTelemetry = {
     status: 'idle',
+    starting: false,
     trackId: null,
     distanceMeters: 0,
     movingTimeMs: 0,
@@ -44,6 +46,7 @@ class TrackRecorderService {
   };
 
   private listeners = new Set<Listener>();
+  private isStarting = false;
   private foregroundSub: Location.LocationSubscription | null = null;
   private headingSub: Location.LocationSubscription | null = null;
   private lastHeadingEmitAt: number = 0;
@@ -75,25 +78,46 @@ class TrackRecorderService {
     return (distanceMeters / (movingTimeMs / 1000)) * 3.6;
   }
 
+  private async getCurrentPositionWithTimeout(
+    accuracy: Location.Accuracy,
+    timeoutMs: number
+  ): Promise<Location.LocationObject | null> {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    try {
+      const timeoutPromise = new Promise<null>((resolve) => {
+        timer = setTimeout(() => resolve(null), timeoutMs);
+      });
+      return await Promise.race([
+        Location.getCurrentPositionAsync({ accuracy }).catch(() => null),
+        timeoutPromise,
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
   async refreshCurrentPosition(): Promise<{
     latitude: number;
     longitude: number;
     accuracy: number | null;
   } | null> {
     try {
-      const fg = await Location.requestForegroundPermissionsAsync();
+      let fg = await Location.getForegroundPermissionsAsync();
+      if (fg.status !== 'granted') {
+        fg = await Location.requestForegroundPermissionsAsync();
+      }
       if (fg.status !== 'granted') {
         this.emit({ errorMessage: '未授予位置权限，请在系统设置中开启定位权限。' });
         return null;
       }
 
-      let loc: Location.LocationObject | null = null;
-      try {
-        loc = await Location.getCurrentPositionAsync({
-          accuracy: Location.Accuracy.High,
-        });
-      } catch {
-        loc = await Location.getLastKnownPositionAsync();
+      let loc = await this.getCurrentPositionWithTimeout(Location.Accuracy.High, 3500);
+      if (!loc) {
+        try {
+          loc = await Location.getLastKnownPositionAsync();
+        } catch {
+          loc = null;
+        }
       }
 
       if (!loc) {
@@ -242,133 +266,209 @@ class TrackRecorderService {
   }
 
   async startRecording(): Promise<boolean> {
+    if (
+      this.isStarting ||
+      this.state.status === 'recording' ||
+      this.state.status === 'paused'
+    ) {
+      return false;
+    }
+
+    this.isStarting = true;
+    this.emit({ starting: true, errorMessage: null });
+
     try {
-      const fg = await Location.requestForegroundPermissionsAsync();
+      let fg = await Location.getForegroundPermissionsAsync();
       if (fg.status !== 'granted') {
-        this.emit({ errorMessage: '需要开启位置权限才能开始真实 GPS 轨迹记录。' });
+        fg = await Location.requestForegroundPermissionsAsync();
+      }
+      if (fg.status !== 'granted') {
+        this.emit({
+          starting: false,
+          errorMessage: '需要开启位置权限才能开始真实 GPS 轨迹记录。',
+        });
         return false;
       }
 
       let bgGranted = false;
       try {
-        // Android 10+ requires two-step foreground -> background ("Always allow") permission
-        const bg = await Location.requestBackgroundPermissionsAsync();
-        bgGranted = bg.status === 'granted';
+        const currentBg = await Location.getBackgroundPermissionsAsync();
+        if (currentBg.status === 'granted') {
+          bgGranted = true;
+        } else if (currentBg.status === 'undetermined' && currentBg.canAskAgain) {
+          const requestedBg = await Location.requestBackgroundPermissionsAsync();
+          bgGranted = requestedBg.status === 'granted';
+        }
       } catch {
         bgGranted = false;
       }
 
       const bgWarning = !bgGranted
-        ? '未授予「始终允许后台定位」，锁屏或切后台将暂停记录，请在系统设置中开启。'
+        ? '未授予「始终允许后台定位」，锁屏或切后台将暂停记录。'
         : null;
 
-      let initialLoc: Location.LocationObject | null = null;
-      try {
-        initialLoc = await Location.getCurrentPositionAsync({
-          accuracy: Location.Accuracy.BestForNavigation,
-        });
-      } catch {
-        initialLoc = await Location.getLastKnownPositionAsync();
+      // Fast non-blocking initial GPS resolution (never freeze the Start button waiting for a cold satellite lock)
+      let initialCoords: {
+        latitude: number;
+        longitude: number;
+        altitudeMeters: number | null;
+        accuracyMeters: number;
+        speedMps: number;
+        timestamp: number;
+      } | null = null;
+
+      if (this.state.currentLocation) {
+        initialCoords = {
+          latitude: this.state.currentLocation.latitude,
+          longitude: this.state.currentLocation.longitude,
+          altitudeMeters: this.state.currentAltitudeMeters,
+          accuracyMeters: this.state.currentLocation.accuracy ?? 0,
+          speedMps: 0,
+          timestamp: Date.now(),
+        };
+      } else {
+        let fastLoc: Location.LocationObject | null = null;
+        try {
+          fastLoc = await Location.getLastKnownPositionAsync();
+        } catch {
+          fastLoc = null;
+        }
+        if (!fastLoc) {
+          fastLoc = await this.getCurrentPositionWithTimeout(Location.Accuracy.Balanced, 1200);
+        }
+        if (fastLoc) {
+          const alt =
+            typeof fastLoc.coords.altitude === 'number' && Number.isFinite(fastLoc.coords.altitude)
+              ? fastLoc.coords.altitude
+              : null;
+          initialCoords = {
+            latitude: fastLoc.coords.latitude,
+            longitude: fastLoc.coords.longitude,
+            altitudeMeters: alt,
+            accuracyMeters: fastLoc.coords.accuracy ?? 0,
+            speedMps: Math.max(0, fastLoc.coords.speed ?? 0),
+            timestamp: fastLoc.timestamp || Date.now(),
+          };
+        }
       }
 
-      if (!initialLoc) {
-        this.emit({ errorMessage: '暂未获取到有效 GPS 定位，请确认手机定位已开启后重试。' });
-        return false;
-      }
+      const now = Date.now();
+      const trackId = makeUuid('trk');
+      const versionId = makeUuid('ver');
+      const segmentId = makeUuid('seg');
+      this.versionId = versionId;
+      this.segmentId = segmentId;
+      this.startedAtMs = now;
 
-    const now = Date.now();
-    const trackId = makeUuid('trk');
-    const versionId = makeUuid('ver');
-    const segmentId = makeUuid('seg');
-    this.versionId = versionId;
-    this.segmentId = segmentId;
-    this.startedAtMs = now;
-
-    const initAlt =
-      typeof initialLoc.coords.altitude === 'number' && Number.isFinite(initialLoc.coords.altitude)
-        ? initialLoc.coords.altitude
+      const firstPoint: TrackPoint | null = initialCoords
+        ? {
+            id: makeUuid('pt'),
+            trackId,
+            segmentId,
+            seq: 1,
+            latitude: initialCoords.latitude,
+            longitude: initialCoords.longitude,
+            altitudeMeters: initialCoords.altitudeMeters ?? 0,
+            accuracyMeters: initialCoords.accuracyMeters,
+            speedMps: initialCoords.speedMps,
+            timestamp: initialCoords.timestamp,
+            isRaw: true,
+          }
         : null;
 
-    const firstPoint: TrackPoint = {
-      id: makeUuid('pt'),
-      trackId,
-      segmentId,
-      seq: 1,
-      latitude: initialLoc.coords.latitude,
-      longitude: initialLoc.coords.longitude,
-      altitudeMeters: initAlt ?? 0,
-      accuracyMeters: initialLoc.coords.accuracy ?? 0,
-      speedMps: Math.max(0, initialLoc.coords.speed ?? 0),
-      timestamp: initialLoc.timestamp || now,
-      isRaw: true,
-    };
+      const db = await openTrailDatabase();
+      await db.withTransactionAsync(async () => {
+        await db.runAsync(
+          `INSERT INTO tracks (id, name, description, color, started_at, status, active_version_id, source)
+           VALUES (?, ?, '', '#B84F24', ?, 'recording', ?, 'recorded')`,
+          [trackId, `徒步记录 ${new Date(now).toLocaleDateString('zh-CN')}`, now, versionId]
+        );
+        await db.runAsync(
+          `INSERT INTO track_versions (id, track_id, parent_version_id, summary, created_at, is_original_raw)
+           VALUES (?, ?, NULL, '原始 GPS 轨迹', ?, 1)`,
+          [versionId, trackId, now]
+        );
+        await db.runAsync(
+          `INSERT INTO track_segments (id, track_id, version_id, segment_index, started_at)
+           VALUES (?, ?, ?, 0, ?)`,
+          [segmentId, trackId, versionId, now]
+        );
+        if (firstPoint) {
+          await db.runAsync(
+            `INSERT INTO track_points (id, track_id, segment_id, seq, latitude, longitude, altitude_meters, accuracy_meters, speed_mps, timestamp, is_raw)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
+            [
+              firstPoint.id,
+              trackId,
+              segmentId,
+              1,
+              firstPoint.latitude,
+              firstPoint.longitude,
+              firstPoint.altitudeMeters,
+              firstPoint.accuracyMeters,
+              firstPoint.speedMps,
+              firstPoint.timestamp,
+            ]
+          );
+        }
+      });
 
-    const db = await openTrailDatabase();
-    await db.withTransactionAsync(async () => {
-      await db.runAsync(
-        `INSERT INTO tracks (id, name, description, color, started_at, status, active_version_id, source)
-         VALUES (?, ?, '', '#B84F24', ?, 'recording', ?, 'recorded')`,
-        [trackId, `徒步记录 ${new Date(now).toLocaleDateString('zh-CN')}`, now, versionId]
+      setActiveRecordingContext(
+        firstPoint
+          ? {
+              trackId,
+              segmentId,
+              lastLat: firstPoint.latitude,
+              lastLng: firstPoint.longitude,
+              lastAlt: firstPoint.altitudeMeters,
+              lastTimestamp: firstPoint.timestamp,
+              seq: 1,
+            }
+          : {
+              trackId,
+              segmentId,
+              lastLat: null,
+              lastLng: null,
+              lastAlt: null,
+              lastTimestamp: null,
+              seq: 0,
+            }
       );
-      await db.runAsync(
-        `INSERT INTO track_versions (id, track_id, parent_version_id, summary, created_at, is_original_raw)
-         VALUES (?, ?, NULL, '原始 GPS 轨迹', ?, 1)`,
-        [versionId, trackId, now]
-      );
-      await db.runAsync(
-        `INSERT INTO track_segments (id, track_id, version_id, segment_index, started_at)
-         VALUES (?, ?, ?, 0, ?)`,
-        [segmentId, trackId, versionId, now]
-      );
-      await db.runAsync(
-        `INSERT INTO track_points (id, track_id, segment_id, seq, latitude, longitude, altitude_meters, accuracy_meters, speed_mps, timestamp, is_raw)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
-        [
-          firstPoint.id,
-          trackId,
-          segmentId,
-          1,
-          firstPoint.latitude,
-          firstPoint.longitude,
-          firstPoint.altitudeMeters,
-          firstPoint.accuracyMeters,
-          firstPoint.speedMps,
-          firstPoint.timestamp,
-        ]
-      );
-    });
 
-    setActiveRecordingContext({
-      trackId,
-      segmentId,
-      lastLat: firstPoint.latitude,
-      lastLng: firstPoint.longitude,
-      lastAlt: firstPoint.altitudeMeters,
-      lastTimestamp: firstPoint.timestamp,
-      seq: 1,
-    });
-
-    this.emit({
-      status: 'recording',
-      trackId,
-      distanceMeters: 0,
-      movingTimeMs: 0,
-      avgSpeedKmh: 0,
-      currentAltitudeMeters: initAlt,
-      currentLocation: {
-        latitude: firstPoint.latitude,
-        longitude: firstPoint.longitude,
-        accuracy: firstPoint.accuracyMeters,
-      },
-      points: [firstPoint],
-      errorMessage: bgWarning,
-    });
+      this.emit({
+        status: 'recording',
+        starting: false,
+        trackId,
+        distanceMeters: 0,
+        movingTimeMs: 0,
+        avgSpeedKmh: 0,
+        ...(initialCoords
+          ? {
+              currentAltitudeMeters: initialCoords.altitudeMeters,
+              currentLocation: {
+                latitude: initialCoords.latitude,
+                longitude: initialCoords.longitude,
+                accuracy: initialCoords.accuracyMeters,
+              },
+            }
+          : {}),
+        points: firstPoint ? [firstPoint] : [],
+        errorMessage: bgWarning ?? (!firstPoint ? '已开始记录，等待 GPS 卫星定位…' : null),
+      });
 
       await this.startGpsStreams(bgGranted);
       return true;
     } catch {
-      this.emit({ errorMessage: '启动 GPS 轨迹记录失败，请检查定位与存储权限。' });
+      this.emit({
+        starting: false,
+        errorMessage: '启动 GPS 轨迹记录失败，请检查定位与存储权限。',
+      });
       return false;
+    } finally {
+      this.isStarting = false;
+      if (this.state.starting) {
+        this.emit({ starting: false });
+      }
     }
   }
 
@@ -437,6 +537,9 @@ class TrackRecorderService {
             accuracy: loc.coords.accuracy ?? null,
           },
           currentAltitudeMeters: alt,
+          ...(this.state.errorMessage === '已开始记录，等待 GPS 卫星定位…'
+            ? { errorMessage: null }
+            : {}),
           ...(this.state.headingDegrees === null && gpsCourse !== null
             ? { headingDegrees: gpsCourse }
             : {}),
@@ -455,11 +558,15 @@ class TrackRecorderService {
           points: nextPoints,
         });
 
-        const db = await openTrailDatabase();
-        await db.runAsync(
-          `UPDATE tracks SET distance_meters = ?, moving_time_ms = ?, avg_speed_mps = ? WHERE id = ?`,
-          [nextDist, this.state.movingTimeMs, nextAvgKmh / 3.6, this.state.trackId]
-        );
+        try {
+          const db = await openTrailDatabase();
+          await db.runAsync(
+            `UPDATE tracks SET distance_meters = ?, moving_time_ms = ?, avg_speed_mps = ? WHERE id = ?`,
+            [nextDist, this.state.movingTimeMs, nextAvgKmh / 3.6, this.state.trackId]
+          );
+        } catch {
+          // Ignore transient SQLite lock while background point update catches up
+        }
       }
     );
   }
@@ -660,7 +767,7 @@ class TrackRecorderService {
       ]
     );
 
-    this.emit({ status: 'completed', points: finalPoints });
+    this.resetForNextHike();
     return finishedTrackId;
   }
 
@@ -670,6 +777,7 @@ class TrackRecorderService {
     this.startedAtMs = 0;
     this.emit({
       status: 'idle',
+      starting: false,
       trackId: null,
       distanceMeters: 0,
       movingTimeMs: 0,

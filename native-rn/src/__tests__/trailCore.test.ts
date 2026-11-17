@@ -61,6 +61,20 @@ describe('trailMath core outdoor algorithms', () => {
       }).accept
     ).toBe(false);
 
+    // Accept first GPS point immediately when recording starts before satellite lock
+    const firstFix = shouldAcceptGpsDelta({
+      accuracyMeters: 9,
+      prevLat: null,
+      prevLng: null,
+      prevTimestamp: null,
+      lat: 39.9912,
+      lng: 116.1886,
+      timestamp: 1000,
+      speedMps: 0,
+    });
+    expect(firstFix.accept).toBe(true);
+    expect(firstFix.addedDistanceMeters).toBe(0);
+
     // Accept genuine hiking step (~15m in 10s)
     const valid = shouldAcceptGpsDelta({
       accuracyMeters: 7,

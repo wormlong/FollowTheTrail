@@ -22,7 +22,7 @@ interface MinimalRecordViewProps {
   referenceRoute?: { id: string; title: string; points: GeoPoint[] } | null;
   onClearReferenceRoute?: () => void;
   onTrackCompleted: (track: RecordedTrack) => void;
-  onViewCompletedTrack: (trackId: string) => void;
+  onViewCompletedTrack?: (trackId: string) => void;
   onGpsUpdate?: (gps: GeoPoint | null) => void;
 }
 
@@ -43,7 +43,6 @@ export const MinimalRecordView: React.FC<MinimalRecordViewProps> = ({
   referenceRoute = null,
   onClearReferenceRoute,
   onTrackCompleted,
-  onViewCompletedTrack,
   onGpsUpdate,
 }) => {
   const [status, setStatus] = useState<RecordingStatus>('idle');
@@ -85,6 +84,12 @@ export const MinimalRecordView: React.FC<MinimalRecordViewProps> = ({
   useEffect(() => {
     onGpsUpdate?.(liveGps);
   }, [liveGps, onGpsUpdate]);
+
+  useEffect(() => {
+    if (!notice || notice === '已开始记录，正在获取 GPS 定位…') return;
+    const timer = window.setTimeout(() => setNotice(null), 3000);
+    return () => window.clearTimeout(timer);
+  }, [notice]);
 
   // Real moving time clock (ONLY accumulates while status === 'recording')
   useEffect(() => {
@@ -262,34 +267,22 @@ export const MinimalRecordView: React.FC<MinimalRecordViewProps> = ({
       setNotice('当前浏览器无真实 GPS 硬件权限。');
       return;
     }
-    setNotice(null);
+
+    const now = Date.now();
     setCompletedTrackId(null);
-    navigator.geolocation.getCurrentPosition(
-      (pos) => {
-        const hasRealAlt = pos.coords.altitude !== null && Number.isFinite(pos.coords.altitude);
-        setAltitudeValid(hasRealAlt);
-        const first: GeoPoint = {
-          lat: pos.coords.latitude,
-          lng: pos.coords.longitude,
-          ele: hasRealAlt ? Math.round(pos.coords.altitude! * 10) / 10 : 0,
-          timestamp: pos.timestamp || Date.now(),
-          accuracy: pos.coords.accuracy,
-          speedMps: pos.coords.speed ?? 0,
-          heading: normalizeHeadingDegrees(pos.coords.heading),
-        };
-        setStartedAt(Date.now());
-        setMovingMs(0);
-        setPoints([first]);
-        setPhotos([]);
-        setLiveGps(first);
-        lastAcceptedRef.current = first;
-        setStatus('recording');
-      },
-      (err) => {
-        setNotice(`无法获取定位权限（${err.message}），未开始记录。`);
-      },
-      { enableHighAccuracy: true, timeout: 10000 }
-    );
+    setStartedAt(now);
+    setMovingMs(0);
+    setPhotos([]);
+    if (liveGps) {
+      setPoints([liveGps]);
+      lastAcceptedRef.current = liveGps;
+      setNotice(null);
+    } else {
+      setPoints([]);
+      lastAcceptedRef.current = null;
+      setNotice('已开始记录，正在获取 GPS 定位…');
+    }
+    setStatus('recording');
   };
 
   const handleConfirmFinish = async () => {
@@ -338,9 +331,14 @@ export const MinimalRecordView: React.FC<MinimalRecordViewProps> = ({
 
     await saveActiveDraft(null);
     onTrackCompleted(finalTrack);
-    setCompletedTrackId(id);
-    setStatus('completed');
-    setNotice('轨迹与统计已保存');
+    setCompletedTrackId(null);
+    setPoints([]);
+    setPhotos([]);
+    setMovingMs(0);
+    setStartedAt(0);
+    lastAcceptedRef.current = null;
+    setStatus('idle');
+    setNotice('轨迹已保存，可在「我的」中查看');
   };
 
   const handlePhotoPicked = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -356,7 +354,7 @@ export const MinimalRecordView: React.FC<MinimalRecordViewProps> = ({
     e.target.value = '';
   };
 
-  const ringRadius = 15;
+  const ringRadius = 11.5;
   const ringCircumference = 2 * Math.PI * ringRadius;
   const ringOffset = ringCircumference * (1 - holdProgress);
 
@@ -391,8 +389,8 @@ export const MinimalRecordView: React.FC<MinimalRecordViewProps> = ({
       )}
 
       {/* Bottom Floating 4-Metric Card + State Controls */}
-      <div className="absolute left-3 right-3 bottom-3 z-10 max-w-lg mx-auto space-y-2.5">
-        <div className="rounded-xl bg-[#F5F3EE]/95 dark:bg-[#141917]/92 backdrop-blur-sm border border-[#DFD9CE] dark:border-[#2B3530] px-3 py-3 grid grid-cols-4 text-center">
+      <div className="absolute left-3 right-3 bottom-3 z-10 max-w-lg mx-auto space-y-2">
+        <div className="rounded-xl bg-[#F5F3EE]/95 dark:bg-[#141917]/92 backdrop-blur-sm border border-[#DFD9CE] dark:border-[#2B3530] px-3 py-2.5 grid grid-cols-4 text-center">
           <div>
             <div className="text-[11px] text-[#5C655F] dark:text-[#9BA39E]">里程</div>
             <div className="text-sm sm:text-base font-semibold font-mono-tabular mt-0.5">
@@ -428,12 +426,12 @@ export const MinimalRecordView: React.FC<MinimalRecordViewProps> = ({
           className="hidden"
         />
 
-        {status === 'idle' && (
+        {(status === 'idle' || status === 'completed') && (
           <div className="flex items-center gap-2.5">
             <button
               type="button"
               onClick={handleStart}
-              className="flex-1 min-h-[48px] rounded-xl bg-[#1E352B] text-white text-sm font-semibold inline-flex items-center justify-center gap-2 cursor-pointer"
+              className="flex-1 min-h-[44px] rounded-xl bg-[#1E352B] text-white text-sm font-semibold inline-flex items-center justify-center gap-2 cursor-pointer"
             >
               <Play className="w-4 h-4" />
               <span>开始</span>
@@ -441,7 +439,7 @@ export const MinimalRecordView: React.FC<MinimalRecordViewProps> = ({
             <button
               type="button"
               onClick={() => cameraInputRef.current?.click()}
-              className="min-h-[48px] px-4 rounded-xl bg-white/95 dark:bg-[#1C2320] border border-[#DFD9CE] dark:border-[#2B3530] text-sm font-medium inline-flex items-center gap-1.5 cursor-pointer"
+              className="min-h-[44px] px-4 rounded-xl bg-white/95 dark:bg-[#1C2320] border border-[#DFD9CE] dark:border-[#2B3530] text-sm font-medium inline-flex items-center gap-1.5 cursor-pointer"
             >
               <Camera className="w-4 h-4" />
               <span>拍照</span>
@@ -455,7 +453,7 @@ export const MinimalRecordView: React.FC<MinimalRecordViewProps> = ({
               <button
                 type="button"
                 onClick={() => setStatus('paused')}
-                className="flex-1 min-h-[48px] rounded-xl bg-white/95 dark:bg-[#1C2320] border border-[#DFD9CE] dark:border-[#2B3530] text-sm font-medium inline-flex items-center justify-center gap-1.5 cursor-pointer"
+                className="flex-1 min-h-[44px] rounded-xl bg-white/95 dark:bg-[#1C2320] border border-[#DFD9CE] dark:border-[#2B3530] text-sm font-medium inline-flex items-center justify-center gap-1.5 cursor-pointer"
               >
                 <Pause className="w-4 h-4" />
                 <span>暂停</span>
@@ -464,44 +462,44 @@ export const MinimalRecordView: React.FC<MinimalRecordViewProps> = ({
               <button
                 type="button"
                 onClick={() => setStatus('recording')}
-                className="flex-1 min-h-[48px] rounded-xl bg-[#1E352B] text-white text-sm font-semibold inline-flex items-center justify-center gap-1.5 cursor-pointer"
+                className="flex-1 min-h-[44px] rounded-xl bg-[#1E352B] text-white text-sm font-semibold inline-flex items-center justify-center gap-1.5 cursor-pointer"
               >
                 <Play className="w-4 h-4" />
                 <span>继续</span>
               </button>
             )}
 
-            {/* 1.5s Long-Press Finish with Circular Progress */}
+            {/* 1.5s Long-Press Finish with Compact Circular Progress */}
             <button
               type="button"
               onPointerDown={handleHoldStart}
               onPointerUp={() => !holdTriggeredRef.current && cancelHold()}
               onPointerLeave={() => !holdTriggeredRef.current && cancelHold()}
               onPointerCancel={cancelHold}
-              className="flex-1 min-h-[48px] rounded-xl bg-white/95 dark:bg-[#1C2320] border border-[#B84F24] text-[#B84F24] text-sm font-medium inline-flex items-center justify-center gap-2 select-none touch-none cursor-pointer"
+              className="flex-1 min-h-[44px] rounded-xl bg-white/95 dark:bg-[#1C2320] border border-[#B84F24] text-[#B84F24] text-sm font-medium inline-flex items-center justify-center gap-1.5 select-none touch-none cursor-pointer"
             >
-              <svg width={36} height={36} className="shrink-0">
+              <svg width={28} height={28} className="shrink-0">
                 <circle
-                  cx={18}
-                  cy={18}
+                  cx={14}
+                  cy={14}
                   r={ringRadius}
                   fill="none"
                   stroke="rgba(184, 79, 36, 0.2)"
-                  strokeWidth={2.8}
+                  strokeWidth={2.4}
                 />
                 <circle
-                  cx={18}
-                  cy={18}
+                  cx={14}
+                  cy={14}
                   r={ringRadius}
                   fill="none"
                   stroke="#B84F24"
-                  strokeWidth={2.8}
+                  strokeWidth={2.4}
                   strokeDasharray={`${ringCircumference} ${ringCircumference}`}
                   strokeDashoffset={ringOffset}
                   strokeLinecap="round"
-                  transform="rotate(-90 18 18)"
+                  transform="rotate(-90 14 14)"
                 />
-                <rect x={13.5} y={13.5} width={9} height={9} rx={1.5} fill="#B84F24" />
+                <rect x={10.5} y={10.5} width={7} height={7} rx={1.5} fill="#B84F24" />
               </svg>
               <span className="whitespace-nowrap">
                 {isHolding
@@ -513,37 +511,10 @@ export const MinimalRecordView: React.FC<MinimalRecordViewProps> = ({
             <button
               type="button"
               onClick={() => cameraInputRef.current?.click()}
-              className="min-h-[48px] px-3.5 rounded-xl bg-white/95 dark:bg-[#1C2320] border border-[#DFD9CE] dark:border-[#2B3530] text-sm font-medium inline-flex items-center gap-1.5 cursor-pointer"
+              className="min-h-[44px] px-3.5 rounded-xl bg-white/95 dark:bg-[#1C2320] border border-[#DFD9CE] dark:border-[#2B3530] text-sm font-medium inline-flex items-center gap-1.5 cursor-pointer"
             >
               <Camera className="w-4 h-4" />
               <span>拍照</span>
-            </button>
-          </div>
-        )}
-
-        {status === 'completed' && (
-          <div className="flex items-center gap-2.5">
-            {completedTrackId && (
-              <button
-                type="button"
-                onClick={() => onViewCompletedTrack(completedTrackId)}
-                className="flex-1 min-h-[48px] rounded-xl bg-[#1E352B] text-white text-sm font-medium cursor-pointer"
-              >
-                查看本次轨迹
-              </button>
-            )}
-            <button
-              type="button"
-              onClick={() => {
-                setStatus('idle');
-                setPoints([]);
-                setMovingMs(0);
-                setCompletedTrackId(null);
-                setNotice(null);
-              }}
-              className="min-h-[48px] px-4 rounded-xl bg-white/95 dark:bg-[#1C2320] border border-[#DFD9CE] dark:border-[#2B3530] text-sm font-medium cursor-pointer"
-            >
-              新记录
             </button>
           </div>
         )}

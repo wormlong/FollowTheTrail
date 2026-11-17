@@ -30,16 +30,16 @@ const REFERENCE_LINE_BASE = {
 };
 
 const LOCATION_HALO_BASE = {
-  circleRadius: 15,
+  circleRadius: 11,
   circleColor: '#B84F24',
-  circleOpacity: 0.2,
+  circleOpacity: 0.16,
 };
 
 const LOCATION_DOT_BASE = {
-  circleRadius: 7,
+  circleRadius: 5.5,
   circleColor: '#B84F24',
   circleStrokeColor: '#FFFFFF',
-  circleStrokeWidth: 2.5,
+  circleStrokeWidth: 2,
 };
 
 const LOCATION_HEADING_BASE = {
@@ -47,7 +47,7 @@ const LOCATION_HEADING_BASE = {
   iconRotate: ['get', 'heading'] as ['get', string],
   iconRotationAlignment: 'map' as const,
   iconPitchAlignment: 'map' as const,
-  iconSize: 0.68,
+  iconSize: 0.44,
   iconAnchor: 'center' as const,
   iconAllowOverlap: true,
   iconIgnorePlacement: true,
@@ -547,7 +547,7 @@ const MapScreenInner: React.FC<MapScreenProps> = ({
           ]}
           accessibilityLabel="地图叠加图层"
         >
-          <Layers size={18} color={overlayMenuOpen ? '#FFFFFF' : theme.textPrimary} />
+          <Layers size={15} color={overlayMenuOpen ? '#FFFFFF' : theme.textPrimary} />
           <Text
             style={[
               styles.controlText,
@@ -608,7 +608,7 @@ const MapScreenInner: React.FC<MapScreenProps> = ({
           ]}
           accessibilityLabel="放大地图"
         >
-          <Plus size={20} color={theme.textPrimary} />
+          <Plus size={18} color={theme.textPrimary} />
         </Pressable>
 
         <Pressable
@@ -619,7 +619,7 @@ const MapScreenInner: React.FC<MapScreenProps> = ({
           ]}
           accessibilityLabel="缩小地图"
         >
-          <Minus size={20} color={theme.textPrimary} />
+          <Minus size={18} color={theme.textPrimary} />
         </Pressable>
 
         <Pressable
@@ -629,12 +629,12 @@ const MapScreenInner: React.FC<MapScreenProps> = ({
             {
               backgroundColor: theme.surface,
               borderColor: followingUi ? theme.primary : theme.border,
-              marginTop: 6,
+              marginTop: 4,
             },
           ]}
           accessibilityLabel="回到当前位置"
         >
-          <LocateFixed size={20} color={followingUi ? theme.primary : theme.textSecondary} />
+          <LocateFixed size={18} color={followingUi ? theme.primary : theme.textSecondary} />
         </Pressable>
       </View>
     </View>
@@ -648,18 +648,18 @@ const styles = StyleSheet.create({
   map: { flex: 1 },
   topRightControls: {
     position: 'absolute',
-    right: 16,
-    top: 56,
+    right: 12,
+    top: 52,
   },
   overlayToggleBtn: {
-    height: 40,
-    paddingHorizontal: 12,
-    borderRadius: 20,
+    height: 36,
+    paddingHorizontal: 10,
+    borderRadius: 18,
     borderWidth: 1,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 6,
+    gap: 5,
     elevation: 2,
     shadowColor: '#000',
     shadowOpacity: 0.1,
@@ -672,8 +672,8 @@ const styles = StyleSheet.create({
   },
   overlayPanel: {
     position: 'absolute',
-    right: 16,
-    top: 104,
+    right: 12,
+    top: 96,
     width: 178,
     borderRadius: 12,
     borderWidth: 1,
@@ -708,14 +708,14 @@ const styles = StyleSheet.create({
   },
   rightDockControls: {
     position: 'absolute',
-    right: 16,
-    bottom: 164,
-    gap: 8,
+    right: 12,
+    bottom: 148,
+    gap: 7,
   },
   circleControlBtn: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
+    width: 38,
+    height: 38,
+    borderRadius: 19,
     borderWidth: 1,
     alignItems: 'center',
     justifyContent: 'center',

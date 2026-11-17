@@ -392,9 +392,9 @@ export const MapLibreOutdoorMap: React.FC<MapLibreOutdoorMapProps> = ({
         source: 'gps-and-cursor',
         filter: ['==', ['get', 'kind'], 'gps'],
         paint: {
-          'circle-radius': 16,
+          'circle-radius': 12,
           'circle-color': '#B84F24',
-          'circle-opacity': 0.18,
+          'circle-opacity': 0.16,
         },
       });
       map.addLayer({
@@ -403,10 +403,10 @@ export const MapLibreOutdoorMap: React.FC<MapLibreOutdoorMapProps> = ({
         source: 'gps-and-cursor',
         filter: ['==', ['get', 'kind'], 'gps'],
         paint: {
-          'circle-radius': 6.5,
+          'circle-radius': 5.5,
           'circle-color': '#B84F24',
           'circle-stroke-color': '#FFFFFF',
-          'circle-stroke-width': 2.5,
+          'circle-stroke-width': 2,
         },
       });
       map.addLayer({
@@ -419,7 +419,7 @@ export const MapLibreOutdoorMap: React.FC<MapLibreOutdoorMapProps> = ({
           'icon-rotate': ['get', 'heading'],
           'icon-rotation-alignment': 'map',
           'icon-pitch-alignment': 'map',
-          'icon-size': 1.25,
+          'icon-size': 0.88,
           'icon-anchor': 'center',
           'icon-allow-overlap': true,
           'icon-ignore-placement': true,
@@ -744,14 +744,14 @@ export const MapLibreOutdoorMap: React.FC<MapLibreOutdoorMapProps> = ({
       )}
 
       {/* Top-Right Controls: Overlay Switcher, Compass Reset, Locate */}
-      <div className="absolute top-3 right-3 z-20 flex flex-col items-end gap-2">
-        <div className="flex flex-col gap-2">
+      <div className="absolute top-3 right-3 z-20 flex flex-col items-end gap-1.5">
+        <div className="flex flex-col gap-1.5">
           <button
             type="button"
             onClick={() => setOverlayMenuOpen((v) => !v)}
             title="地图图层叠加"
             aria-label="叠加图层"
-            className={`w-11 h-11 rounded-xl border shadow-sm flex items-center justify-center cursor-pointer transition-colors ${
+            className={`w-9 h-9 rounded-lg border shadow-sm flex items-center justify-center cursor-pointer transition-colors ${
               overlayMenuOpen
                 ? 'bg-[#1E352B] border-[#1E352B] text-white'
                 : 'bg-white/95 dark:bg-[#1A211E]/95 border-[#DFD9CE] dark:border-[#2C3530] text-[#1E352B] dark:text-[#ECEAE4]'
@@ -765,7 +765,7 @@ export const MapLibreOutdoorMap: React.FC<MapLibreOutdoorMapProps> = ({
             onClick={() => mapRef.current?.easeTo({ bearing: 0, pitch: 0, duration: 250 })}
             title="指北回正"
             aria-label="指南针指北"
-            className="w-11 h-11 rounded-xl bg-white/95 dark:bg-[#1A211E]/95 border border-[#DFD9CE] dark:border-[#2C3530] shadow-sm flex items-center justify-center cursor-pointer"
+            className="w-9 h-9 rounded-lg bg-white/95 dark:bg-[#1A211E]/95 border border-[#DFD9CE] dark:border-[#2C3530] shadow-sm flex items-center justify-center cursor-pointer"
           >
             <Compass
               className="w-4 h-4 text-[#1E352B] dark:text-[#ECEAE4] transition-transform"
@@ -778,7 +778,7 @@ export const MapLibreOutdoorMap: React.FC<MapLibreOutdoorMapProps> = ({
             onClick={handleRecenter}
             title="定位当前位置"
             aria-label="定位回中"
-            className="w-11 h-11 rounded-xl bg-white/95 dark:bg-[#1A211E]/95 border border-[#DFD9CE] dark:border-[#2C3530] shadow-sm flex items-center justify-center cursor-pointer"
+            className="w-9 h-9 rounded-lg bg-white/95 dark:bg-[#1A211E]/95 border border-[#DFD9CE] dark:border-[#2C3530] shadow-sm flex items-center justify-center cursor-pointer"
           >
             <LocateFixed className="w-4 h-4 text-[#B84F24]" />
           </button>

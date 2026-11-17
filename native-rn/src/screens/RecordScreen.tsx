@@ -15,7 +15,7 @@ import { SimpleTrailGuide } from './DiscoverScreen';
 import { MapScreen } from './MapScreen';
 
 interface RecordScreenProps {
-  onViewCompletedTrack: (trackId: string) => void;
+  onViewCompletedTrack?: (trackId: string) => void;
   referenceGuide?: SimpleTrailGuide | null;
   onClearReferenceGuide?: () => void;
 }
@@ -30,7 +30,6 @@ function formatMovingTime(ms: number): string {
 }
 
 export const RecordScreen: React.FC<RecordScreenProps> = ({
-  onViewCompletedTrack,
   referenceGuide = null,
   onClearReferenceGuide,
 }) => {
@@ -40,7 +39,6 @@ export const RecordScreen: React.FC<RecordScreenProps> = ({
 
   const [telemetry, setTelemetry] = useState<RecorderTelemetry>(() => trackRecorder.getSnapshot());
   const [feedback, setFeedback] = useState<string | null>(null);
-  const [finishedTrackId, setFinishedTrackId] = useState<string | null>(null);
 
   useEffect(() => {
     const unsub = trackRecorder.subscribe(setTelemetry);
@@ -54,6 +52,12 @@ export const RecordScreen: React.FC<RecordScreenProps> = ({
     };
   }, []);
 
+  useEffect(() => {
+    if (!feedback) return;
+    const timer = setTimeout(() => setFeedback(null), 2800);
+    return () => clearTimeout(timer);
+  }, [feedback]);
+
   const handlePressLocate = useCallback(async () => {
     const pos = await trackRecorder.refreshCurrentPosition();
     await trackRecorder.startHeadingWatch();
@@ -62,7 +66,6 @@ export const RecordScreen: React.FC<RecordScreenProps> = ({
 
   const handleStart = async () => {
     setFeedback(null);
-    setFinishedTrackId(null);
     await trackRecorder.startRecording();
   };
 
@@ -77,8 +80,9 @@ export const RecordScreen: React.FC<RecordScreenProps> = ({
   const handleConfirmFinish = async () => {
     const savedId = await trackRecorder.stopAndSaveRecording();
     if (savedId) {
-      setFinishedTrackId(savedId);
-      setFeedback('轨迹与统计数据已保存至本地数据库');
+      setFeedback('轨迹已保存，可在「我的」中查看');
+    } else {
+      trackRecorder.resetForNextHike();
     }
   };
 
@@ -153,14 +157,23 @@ export const RecordScreen: React.FC<RecordScreenProps> = ({
           <StatItem label="海拔" value={altitudeText} theme={theme} />
         </View>
 
-        {telemetry.status === 'idle' && (
+        {(telemetry.status === 'idle' || telemetry.status === 'completed') && (
           <View style={styles.controlsRow}>
             <Pressable
               onPress={handleStart}
-              style={[styles.primaryBtn, { backgroundColor: theme.primary }]}
+              disabled={telemetry.starting}
+              style={({ pressed }) => [
+                styles.primaryBtn,
+                {
+                  backgroundColor: theme.primary,
+                  opacity: telemetry.starting ? 0.72 : pressed ? 0.9 : 1,
+                },
+              ]}
             >
-              <Play size={18} color="#FFFFFF" />
-              <Text style={styles.primaryBtnText}>开始</Text>
+              <Play size={16} color="#FFFFFF" />
+              <Text style={styles.primaryBtnText}>
+                {telemetry.starting ? '启动中...' : '开始'}
+              </Text>
             </Pressable>
 
             <Pressable
@@ -170,7 +183,7 @@ export const RecordScreen: React.FC<RecordScreenProps> = ({
                 { backgroundColor: theme.surface, borderColor: theme.border },
               ]}
             >
-              <Camera size={18} color={theme.textPrimary} />
+              <Camera size={16} color={theme.textPrimary} />
               <Text style={[styles.secondaryBtnText, { color: theme.textPrimary }]}>拍照</Text>
             </Pressable>
           </View>
@@ -185,7 +198,7 @@ export const RecordScreen: React.FC<RecordScreenProps> = ({
                 { backgroundColor: theme.surface, borderColor: theme.border },
               ]}
             >
-              <Pause size={18} color={theme.textPrimary} />
+              <Pause size={16} color={theme.textPrimary} />
               <Text style={[styles.secondaryBtnText, { color: theme.textPrimary }]}>暂停</Text>
             </Pressable>
 
@@ -201,7 +214,7 @@ export const RecordScreen: React.FC<RecordScreenProps> = ({
                 { backgroundColor: theme.surface, borderColor: theme.border },
               ]}
             >
-              <Camera size={18} color={theme.textPrimary} />
+              <Camera size={16} color={theme.textPrimary} />
               <Text style={[styles.secondaryBtnText, { color: theme.textPrimary }]}>拍照</Text>
             </Pressable>
           </View>
@@ -213,7 +226,7 @@ export const RecordScreen: React.FC<RecordScreenProps> = ({
               onPress={handleResume}
               style={[styles.primaryBtn, { backgroundColor: theme.primary }]}
             >
-              <Play size={18} color="#FFFFFF" />
+              <Play size={16} color="#FFFFFF" />
               <Text style={styles.primaryBtnText}>继续</Text>
             </Pressable>
 
@@ -229,34 +242,8 @@ export const RecordScreen: React.FC<RecordScreenProps> = ({
                 { backgroundColor: theme.surface, borderColor: theme.border },
               ]}
             >
-              <Camera size={18} color={theme.textPrimary} />
+              <Camera size={16} color={theme.textPrimary} />
               <Text style={[styles.secondaryBtnText, { color: theme.textPrimary }]}>拍照</Text>
-            </Pressable>
-          </View>
-        )}
-
-        {telemetry.status === 'completed' && (
-          <View style={styles.controlsRow}>
-            {finishedTrackId && (
-              <Pressable
-                onPress={() => onViewCompletedTrack(finishedTrackId)}
-                style={[styles.primaryBtn, { backgroundColor: theme.primary }]}
-              >
-                <Text style={styles.primaryBtnText}>查看本次轨迹</Text>
-              </Pressable>
-            )}
-            <Pressable
-              onPress={() => {
-                setFinishedTrackId(null);
-                setFeedback(null);
-                trackRecorder.resetForNextHike();
-              }}
-              style={[
-                styles.secondaryBtn,
-                { backgroundColor: theme.surface, borderColor: theme.border },
-              ]}
-            >
-              <Text style={[styles.secondaryBtnText, { color: theme.textPrimary }]}>新记录</Text>
             </Pressable>
           </View>
         )}
@@ -301,15 +288,15 @@ const styles = StyleSheet.create({
   },
   bottomDock: {
     position: 'absolute',
-    left: 14,
-    right: 14,
-    bottom: 14,
-    gap: 10,
+    left: 12,
+    right: 12,
+    bottom: 10,
+    gap: 8,
   },
   statsCard: {
     borderRadius: 12,
     borderWidth: 1,
-    paddingVertical: 12,
+    paddingVertical: 10,
     paddingHorizontal: 10,
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -334,7 +321,7 @@ const styles = StyleSheet.create({
   },
   primaryBtn: {
     flex: 1.3,
-    height: 50,
+    height: 46,
     borderRadius: 12,
     flexDirection: 'row',
     alignItems: 'center',
@@ -348,7 +335,7 @@ const styles = StyleSheet.create({
   },
   secondaryBtn: {
     flex: 1,
-    height: 50,
+    height: 46,
     borderRadius: 12,
     borderWidth: 1,
     flexDirection: 'row',
@@ -357,8 +344,8 @@ const styles = StyleSheet.create({
     gap: 6,
   },
   cameraBtn: {
-    height: 50,
-    paddingHorizontal: 16,
+    height: 46,
+    paddingHorizontal: 14,
     borderRadius: 12,
     borderWidth: 1,
     flexDirection: 'row',
