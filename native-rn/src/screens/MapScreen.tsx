@@ -1,38 +1,52 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
-import MapLibreGL from '@maplibre/maplibre-react-native';
-import { Check, Layers, LocateFixed } from 'lucide-react-native';
+import MapLibreGL, { type MapViewRef } from '@maplibre/maplibre-react-native';
+import { Check, Layers, LocateFixed, Minus, Plus } from 'lucide-react-native';
 import { TrackPoint } from '../types/domain';
 import { OutdoorColors } from '../theme/tokens';
+import { createOrganicOutdoorStyle } from '../map/organicOutdoorStyle';
 
-// MapLibre is strictly the rendering engine; open/offline raster & vector sources are attached explicitly.
+// MapLibre is strictly the rendering engine; OpenFreeMap vector tiles + open raster overlays are configured explicitly.
 MapLibreGL.setAccessToken(null);
 
-const OFFLINE_BASE_STYLE = JSON.stringify({
-  version: 8,
-  name: 'FollowTheTrailBase',
-  sources: {},
-  layers: [
-    {
-      id: 'background',
-      type: 'background',
-      paint: { 'background-color': '#EFECE4' },
-    },
-  ],
-});
+const HEADING_IMAGES = {
+  'user-heading-arrow': require('../../assets/location-arrow.png'),
+};
 
-const OFFLINE_DARK_STYLE = JSON.stringify({
-  version: 8,
-  name: 'FollowTheTrailDarkBase',
-  sources: {},
-  layers: [
-    {
-      id: 'background',
-      type: 'background',
-      paint: { 'background-color': '#141917' },
-    },
-  ],
-});
+const COMPASS_MARGINS = { x: 16, y: 56 };
+
+const REFERENCE_LINE_STYLE = {
+  lineColor: '#2D6A4F',
+  lineWidth: 3,
+  lineOpacity: 0.85,
+  lineDasharray: [2, 1.5],
+  lineCap: 'round' as const,
+  lineJoin: 'round' as const,
+};
+
+const LOCATION_HALO_STYLE = {
+  circleRadius: 15,
+  circleColor: '#B84F24',
+  circleOpacity: 0.2,
+};
+
+const LOCATION_DOT_STYLE = {
+  circleRadius: 7,
+  circleColor: '#B84F24',
+  circleStrokeColor: '#FFFFFF',
+  circleStrokeWidth: 2.5,
+};
+
+const LOCATION_HEADING_STYLE = {
+  iconImage: 'user-heading-arrow',
+  iconRotate: ['get', 'heading'] as ['get', string],
+  iconRotationAlignment: 'map' as const,
+  iconPitchAlignment: 'map' as const,
+  iconSize: 0.68,
+  iconAnchor: 'center' as const,
+  iconAllowOverlap: true,
+  iconIgnorePlacement: true,
+};
 
 interface MapOverlayState {
   baseOutdoor: boolean;
@@ -58,12 +72,12 @@ interface MapScreenProps {
 
 const OVERLAY_OPTIONS: Array<{ key: keyof MapOverlayState; label: string }> = [
   { key: 'baseOutdoor', label: '基础户外地图' },
-  { key: 'contours', label: '等高线图层' },
+  { key: 'contours', label: '等高线地形图' },
   { key: 'satellite', label: '卫星影像' },
   { key: 'hillshade', label: '地形阴影' },
 ];
 
-export const MapScreen: React.FC<MapScreenProps> = ({
+const MapScreenInner: React.FC<MapScreenProps> = ({
   points,
   currentLocation,
   headingDegrees = null,
@@ -71,16 +85,30 @@ export const MapScreen: React.FC<MapScreenProps> = ({
   darkMode = false,
   onPressLocate,
 }) => {
+  const mapViewRef = useRef<MapViewRef>(null);
   const cameraRef = useRef<React.ElementRef<typeof MapLibreGL.Camera>>(null);
-  const [followingUser, setFollowingUser] = useState<boolean>(true);
+  const followingUserRef = useRef<boolean>(true);
+  const hasCenteredInitialRef = useRef<boolean>(false);
+
+  const [followingUi, setFollowingUi] = useState<boolean>(true);
   const [overlayMenuOpen, setOverlayMenuOpen] = useState<boolean>(false);
   const [overlays, setOverlays] = useState<MapOverlayState>({
     baseOutdoor: true,
-    contours: true,
+    contours: false,
     satellite: false,
     hillshade: false,
   });
   const theme = darkMode ? OutdoorColors.dark : OutdoorColors.light;
+
+  const trackLineStyle = useMemo(
+    () => ({
+      lineColor: theme.accent,
+      lineWidth: 3.5,
+      lineCap: 'round' as const,
+      lineJoin: 'round' as const,
+    }),
+    [theme.accent]
+  );
 
   const trackGeoJson = useMemo(() => {
     if (points.length < 2) return null;
@@ -138,6 +166,28 @@ export const MapScreen: React.FC<MapScreenProps> = ({
     };
   }, [currentLocation, hasValidHeading, headingDegrees]);
 
+  // Center once on initial GPS fix, and gently pan (preserving user's zoom!) only when following
+  useEffect(() => {
+    if (!currentLocation) return;
+    if (!hasCenteredInitialRef.current) {
+      hasCenteredInitialRef.current = true;
+      cameraRef.current?.setCamera({
+        centerCoordinate: [currentLocation.longitude, currentLocation.latitude],
+        zoomLevel: 15.8,
+        animationDuration: 350,
+        animationMode: 'easeTo',
+      });
+      return;
+    }
+    if (followingUserRef.current) {
+      cameraRef.current?.setCamera({
+        centerCoordinate: [currentLocation.longitude, currentLocation.latitude],
+        animationDuration: 250,
+        animationMode: 'easeTo',
+      });
+    }
+  }, [currentLocation?.latitude, currentLocation?.longitude]);
+
   useEffect(() => {
     if (!referenceCoordinates || referenceCoordinates.length < 2) return;
     let minLng = referenceCoordinates[0][0];
@@ -150,7 +200,8 @@ export const MapScreen: React.FC<MapScreenProps> = ({
       if (lat < minLat) minLat = lat;
       if (lat > maxLat) maxLat = lat;
     }
-    setFollowingUser(false);
+    followingUserRef.current = false;
+    setFollowingUi(false);
     cameraRef.current?.fitBounds([maxLng, maxLat], [minLng, minLat], [72, 36, 180, 36], 450);
   }, [referenceCoordinates]);
 
@@ -158,8 +209,27 @@ export const MapScreen: React.FC<MapScreenProps> = ({
     setOverlays((prev) => ({ ...prev, [key]: !prev[key] }));
   };
 
+  const handleReleaseFollow = useCallback(() => {
+    if (followingUserRef.current) {
+      followingUserRef.current = false;
+      setFollowingUi(false);
+    }
+  }, []);
+
+  const handleZoomStep = useCallback(async (delta: number) => {
+    handleReleaseFollow();
+    try {
+      const currentZoom = (await mapViewRef.current?.getZoom()) ?? 15;
+      const targetZoom = Math.min(20.5, Math.max(3, currentZoom + delta));
+      cameraRef.current?.zoomTo(targetZoom, 220);
+    } catch {
+      // Ignore if map not yet initialized
+    }
+  }, [handleReleaseFollow]);
+
   const handleRecenter = async () => {
-    setFollowingUser(true);
+    followingUserRef.current = true;
+    setFollowingUi(true);
     setOverlayMenuOpen(false);
     const fresh = await onPressLocate?.();
     const target =
@@ -167,36 +237,50 @@ export const MapScreen: React.FC<MapScreenProps> = ({
     if (target) {
       cameraRef.current?.setCamera({
         centerCoordinate: [target.longitude, target.latitude],
-        zoomLevel: 15.5,
+        zoomLevel: 16,
         animationDuration: 350,
+        animationMode: 'easeTo',
       });
     }
   };
 
-  const contourOpacity = overlays.satellite ? 0.48 : overlays.baseOutdoor ? 0.62 : 0.95;
+  const mapStyleUrl = darkMode ? OFFLINE_DARK_STYLE : OFFLINE_BASE_STYLE;
+
+  const contourOpacity = overlays.satellite ? 0.48 : overlays.baseOutdoor ? 0.52 : 0.96;
 
   return (
-    <View style={[styles.container, { backgroundColor: theme.background }]}>
+    <View
+      style={[styles.container, { backgroundColor: theme.background }]}
+      onTouchStart={handleReleaseFollow}
+    >
       <MapLibreGL.MapView
+        ref={mapViewRef}
         style={styles.map}
-        mapStyle={darkMode ? OFFLINE_DARK_STYLE : OFFLINE_BASE_STYLE}
-        compassEnabled
-        compassViewMargins={{ x: 16, y: 56 }}
+        mapStyle={mapStyleUrl}
+        preferredFramesPerSecond={120}
+        localizeLabels
+        zoomEnabled
+        scrollEnabled
         rotateEnabled
+        pitchEnabled
+        compassEnabled
+        compassViewPosition={0}
+        compassViewMargins={COMPASS_MARGINS}
         attributionEnabled={false}
+        regionWillChangeDebounceTime={120}
         onPress={() => {
           if (overlayMenuOpen) setOverlayMenuOpen(false);
         }}
         onRegionWillChange={(feature) => {
           if (feature?.properties?.isUserInteraction) {
-            setFollowingUser(false);
+            handleReleaseFollow();
           }
         }}
       >
         <MapLibreGL.Camera
           ref={cameraRef}
-          followUserLocation={followingUser && Boolean(currentLocation)}
-          followZoomLevel={15.5}
+          minZoomLevel={2}
+          maxZoomLevel={21}
           defaultSettings={{
             centerCoordinate: currentLocation
               ? [currentLocation.longitude, currentLocation.latitude]
@@ -205,157 +289,102 @@ export const MapScreen: React.FC<MapScreenProps> = ({
           }}
         />
 
-        <MapLibreGL.UserLocation visible={false} />
+        <MapLibreGL.Images images={HEADING_IMAGES} />
 
-        <MapLibreGL.Images
-          images={{
-            'user-heading-arrow': require('../../assets/location-arrow.png'),
-          }}
-        />
+        {/* Base Outdoor OSM Map (strict maxZoomLevel=19, clean single-layer default) */}
+        {overlays.baseOutdoor && (
+          <MapLibreGL.RasterSource
+            id="osm-outdoor-base"
+            tileUrlTemplates={['https://tile.openstreetmap.org/{z}/{x}/{y}.png']}
+            tileSize={256}
+            maxZoomLevel={19}
+          >
+            <MapLibreGL.RasterLayer id="osm-outdoor-layer" sourceID="osm-outdoor-base" />
+          </MapLibreGL.RasterSource>
+        )}
 
-        {/* Base OSM Map */}
-        <MapLibreGL.RasterSource
-          id="osm-outdoor-base"
-          tileUrlTemplates={['https://tile.openstreetmap.org/{z}/{x}/{y}.png']}
-          tileSize={256}
-        >
-          <MapLibreGL.RasterLayer
-            id="osm-outdoor-layer"
-            sourceID="osm-outdoor-base"
-            style={{
-              visibility: overlays.baseOutdoor ? 'visible' : 'none',
-            }}
-          />
-        </MapLibreGL.RasterSource>
+        {/* Satellite Imagery (strict maxZoomLevel=18) */}
+        {overlays.satellite && (
+          <MapLibreGL.RasterSource
+            id="satellite-imagery"
+            tileUrlTemplates={[
+              'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+            ]}
+            tileSize={256}
+            maxZoomLevel={18}
+          >
+            <MapLibreGL.RasterLayer id="satellite-imagery-layer" sourceID="satellite-imagery" />
+          </MapLibreGL.RasterSource>
+        )}
 
-        {/* Satellite Imagery (under contours so contours can overlay satellite) */}
-        <MapLibreGL.RasterSource
-          id="satellite-imagery"
-          tileUrlTemplates={[
-            'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
-          ]}
-          tileSize={256}
-        >
-          <MapLibreGL.RasterLayer
-            id="satellite-imagery-layer"
-            sourceID="satellite-imagery"
-            style={{
-              visibility: overlays.satellite ? 'visible' : 'none',
-            }}
-          />
-        </MapLibreGL.RasterSource>
+        {/* Topographic Contours Overlay (strict maxZoomLevel=17 prevents "max zoom layer = 17" watermark) */}
+        {overlays.contours && (
+          <MapLibreGL.RasterSource
+            id="opentopo-contours"
+            tileUrlTemplates={['https://tile.opentopomap.org/{z}/{x}/{y}.png']}
+            tileSize={256}
+            maxZoomLevel={17}
+          >
+            <MapLibreGL.RasterLayer
+              id="opentopo-contours-layer"
+              sourceID="opentopo-contours"
+              style={{ rasterOpacity: contourOpacity }}
+            />
+          </MapLibreGL.RasterSource>
+        )}
 
-        {/* Topographic Contours Overlay (OpenTopoMap) */}
-        <MapLibreGL.RasterSource
-          id="opentopo-contours"
-          tileUrlTemplates={['https://tile.opentopomap.org/{z}/{x}/{y}.png']}
-          tileSize={256}
-        >
-          <MapLibreGL.RasterLayer
-            id="opentopo-contours-layer"
-            sourceID="opentopo-contours"
-            style={{
-              visibility: overlays.contours ? 'visible' : 'none',
-              rasterOpacity: contourOpacity,
-            }}
-          />
-        </MapLibreGL.RasterSource>
-
-        {/* Hillshade Relief Contrast Overlay */}
-        <MapLibreGL.RasterSource
-          id="hillshade-relief"
-          tileUrlTemplates={['https://tile.opentopomap.org/{z}/{x}/{y}.png']}
-          tileSize={256}
-        >
-          <MapLibreGL.RasterLayer
-            id="hillshade-relief-layer"
-            sourceID="hillshade-relief"
-            style={{
-              visibility: overlays.hillshade ? 'visible' : 'none',
-              rasterOpacity: 0.22,
-              rasterContrast: 0.35,
-            }}
-          />
-        </MapLibreGL.RasterSource>
+        {/* Hillshade Relief Contrast Overlay (strict maxZoomLevel=17) */}
+        {overlays.hillshade && (
+          <MapLibreGL.RasterSource
+            id="hillshade-relief"
+            tileUrlTemplates={['https://tile.opentopomap.org/{z}/{x}/{y}.png']}
+            tileSize={256}
+            maxZoomLevel={17}
+          >
+            <MapLibreGL.RasterLayer
+              id="hillshade-relief-layer"
+              sourceID="hillshade-relief"
+              style={{
+                rasterOpacity: 0.22,
+                rasterContrast: 0.35,
+              }}
+            />
+          </MapLibreGL.RasterSource>
+        )}
 
         {referenceGeoJson && (
           <MapLibreGL.ShapeSource id="reference-guide-source" shape={referenceGeoJson}>
-            <MapLibreGL.LineLayer
-              id="reference-guide-line"
-              style={{
-                lineColor: '#2D6A4F',
-                lineWidth: 3,
-                lineOpacity: 0.85,
-                lineDasharray: [2, 1.5],
-                lineCap: 'round',
-                lineJoin: 'round',
-              }}
-            />
+            <MapLibreGL.LineLayer id="reference-guide-line" style={REFERENCE_LINE_STYLE} />
           </MapLibreGL.ShapeSource>
         )}
 
         {trackGeoJson && (
           <MapLibreGL.ShapeSource id="recorded-track-source" shape={trackGeoJson}>
-            <MapLibreGL.LineLayer
-              id="recorded-track-line"
-              style={{
-                lineColor: theme.accent,
-                lineWidth: 3.5,
-                lineCap: 'round',
-                lineJoin: 'round',
-              }}
-            />
+            <MapLibreGL.LineLayer id="recorded-track-line" style={trackLineStyle} />
           </MapLibreGL.ShapeSource>
         )}
 
-        {/* Explicit Current Position Dot + Directional Heading Arrow */}
+        {/* Current Position Dot + Directional Heading Arrow */}
         {currentLocationGeoJson && (
-          <MapLibreGL.ShapeSource
-            id="current-location-source"
-            shape={currentLocationGeoJson}
-          >
-            <MapLibreGL.CircleLayer
-              id="current-location-halo"
-              style={{
-                circleRadius: 15,
-                circleColor: '#B84F24',
-                circleOpacity: 0.2,
-              }}
-            />
-            <MapLibreGL.CircleLayer
-              id="current-location-dot"
-              style={{
-                circleRadius: 7,
-                circleColor: '#B84F24',
-                circleStrokeColor: '#FFFFFF',
-                circleStrokeWidth: 2.5,
-              }}
-            />
+          <MapLibreGL.ShapeSource id="current-location-source" shape={currentLocationGeoJson}>
+            <MapLibreGL.CircleLayer id="current-location-halo" style={LOCATION_HALO_STYLE} />
+            <MapLibreGL.CircleLayer id="current-location-dot" style={LOCATION_DOT_STYLE} />
             {hasValidHeading && (
               <MapLibreGL.SymbolLayer
                 id="current-location-heading"
-                style={{
-                  iconImage: 'user-heading-arrow',
-                  iconRotate: ['get', 'heading'],
-                  iconRotationAlignment: 'map',
-                  iconPitchAlignment: 'map',
-                  iconSize: 0.68,
-                  iconAnchor: 'center',
-                  iconAllowOverlap: true,
-                  iconIgnorePlacement: true,
-                }}
+                style={LOCATION_HEADING_STYLE}
               />
             )}
           </MapLibreGL.ShapeSource>
         )}
       </MapLibreGL.MapView>
 
-      {/* Top-Right Controls: Overlay Switcher + Locate */}
+      {/* Top-Right Layer Switcher */}
       <View style={styles.topRightControls}>
         <Pressable
           onPress={() => setOverlayMenuOpen((v) => !v)}
           style={[
-            styles.controlBtn,
+            styles.overlayToggleBtn,
             {
               backgroundColor: overlayMenuOpen ? theme.primary : theme.surface,
               borderColor: overlayMenuOpen ? theme.primary : theme.border,
@@ -372,18 +401,6 @@ export const MapScreen: React.FC<MapScreenProps> = ({
           >
             叠加
           </Text>
-        </Pressable>
-
-        <Pressable
-          onPress={handleRecenter}
-          style={[
-            styles.controlBtn,
-            { backgroundColor: theme.surface, borderColor: theme.border },
-          ]}
-          accessibilityLabel="回到当前位置"
-        >
-          <LocateFixed size={18} color={followingUser ? theme.primary : theme.textSecondary} />
-          <Text style={[styles.controlText, { color: theme.textPrimary }]}>定位</Text>
         </Pressable>
       </View>
 
@@ -425,9 +442,51 @@ export const MapScreen: React.FC<MapScreenProps> = ({
           })}
         </View>
       )}
+
+      {/* Organic Maps–Style Right-Side Zoom (+ / -) & Locate Controls */}
+      <View style={styles.rightDockControls}>
+        <Pressable
+          onPress={() => handleZoomStep(1)}
+          style={[
+            styles.circleControlBtn,
+            { backgroundColor: theme.surface, borderColor: theme.border },
+          ]}
+          accessibilityLabel="放大地图"
+        >
+          <Plus size={20} color={theme.textPrimary} />
+        </Pressable>
+
+        <Pressable
+          onPress={() => handleZoomStep(-1)}
+          style={[
+            styles.circleControlBtn,
+            { backgroundColor: theme.surface, borderColor: theme.border },
+          ]}
+          accessibilityLabel="缩小地图"
+        >
+          <Minus size={20} color={theme.textPrimary} />
+        </Pressable>
+
+        <Pressable
+          onPress={handleRecenter}
+          style={[
+            styles.circleControlBtn,
+            {
+              backgroundColor: theme.surface,
+              borderColor: followingUi ? theme.primary : theme.border,
+              marginTop: 6,
+            },
+          ]}
+          accessibilityLabel="回到当前位置"
+        >
+          <LocateFixed size={20} color={followingUi ? theme.primary : theme.textSecondary} />
+        </Pressable>
+      </View>
     </View>
   );
 };
+
+export const MapScreen = memo(MapScreenInner);
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
@@ -436,30 +495,35 @@ const styles = StyleSheet.create({
     position: 'absolute',
     right: 16,
     top: 56,
-    gap: 8,
   },
-  controlBtn: {
+  overlayToggleBtn: {
     height: 40,
     paddingHorizontal: 12,
-    borderRadius: 10,
+    borderRadius: 20,
     borderWidth: 1,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     gap: 6,
+    elevation: 2,
+    shadowColor: '#000',
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    shadowOffset: { width: 0, height: 2 },
   },
   controlText: {
     fontSize: 12,
-    fontWeight: '500',
+    fontWeight: '600',
   },
   overlayPanel: {
     position: 'absolute',
     right: 16,
-    top: 152,
-    width: 176,
+    top: 104,
+    width: 178,
     borderRadius: 12,
     borderWidth: 1,
     overflow: 'hidden',
+    elevation: 4,
   },
   overlayHeader: {
     fontSize: 11,
@@ -486,5 +550,24 @@ const styles = StyleSheet.create({
     borderWidth: 1.5,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  rightDockControls: {
+    position: 'absolute',
+    right: 16,
+    bottom: 164,
+    gap: 8,
+  },
+  circleControlBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    elevation: 2,
+    shadowColor: '#000',
+    shadowOpacity: 0.12,
+    shadowRadius: 4,
+    shadowOffset: { width: 0, height: 2 },
   },
 });

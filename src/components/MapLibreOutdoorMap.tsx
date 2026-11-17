@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import * as maplibregl from 'maplibre-gl';
+import maplibreWorkerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?url';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import { Check, Compass, Layers, LocateFixed } from 'lucide-react';
 import {
@@ -14,7 +15,14 @@ import {
   requestCompassPermissionIfNeeded,
   useCompassHeading,
 } from '../utils/compassHeading';
+import {
+  createOrganicOutdoorStyle,
+  VECTOR_BASE_LAYER_IDS,
+} from '../map/organicOutdoorStyle';
 import { TopoMapCanvas } from './TopoMapCanvas';
+
+// Ensure Vite 8 / Rollup worker resolution works reliably for vector tiles and GeoJSON sources
+maplibregl.setWorkerUrl(maplibreWorkerUrl);
 
 export interface MapOverlayTrack {
   id: string;
@@ -106,6 +114,8 @@ export const MapLibreOutdoorMap: React.FC<MapLibreOutdoorMapProps> = ({
   const [mapReady, setMapReady] = useState(false);
   const [bearing, setBearing] = useState(0);
   const [layerState, setLayerState] = useState<MapLayersState>(layers);
+  const layerStateRef = useRef<MapLayersState>(layers);
+  const osmFallbackActiveRef = useRef<boolean>(false);
   const [overlayMenuOpen, setOverlayMenuOpen] = useState(false);
   const [localGps, setLocalGps] = useState<GeoPoint | null>(null);
   const [locateError, setLocateError] = useState<string | null>(null);
@@ -113,7 +123,12 @@ export const MapLibreOutdoorMap: React.FC<MapLibreOutdoorMapProps> = ({
 
   useEffect(() => {
     setLayerState(layers);
+    layerStateRef.current = layers;
   }, [layers]);
+
+  useEffect(() => {
+    layerStateRef.current = layerState;
+  }, [layerState]);
 
   const effectiveGps = currentGps ?? localGps;
   const effectiveHeading = useMemo(
@@ -132,7 +147,7 @@ export const MapLibreOutdoorMap: React.FC<MapLibreOutdoorMapProps> = ({
     return [116.178, 39.994];
   }, []);
 
-  // Initialize MapLibre GL JS with explicit open raster tile sources
+  // Initialize MapLibre GL JS with Organic Maps-inspired vector cartography + fallback & overlays
   useEffect(() => {
     if (!webglReady || !containerRef.current) return;
 
@@ -141,68 +156,14 @@ export const MapLibreOutdoorMap: React.FC<MapLibreOutdoorMapProps> = ({
       center: initialCenter,
       zoom: 13.4,
       pitch: 0,
+      maxZoom: 20,
       attributionControl: false,
-      style: {
-        version: 8,
-        sources: {
-          osmBase: {
-            type: 'raster',
-            tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'],
-            tileSize: 256,
-            attribution: '© OpenStreetMap (ODbL)',
-          },
-          openTopo: {
-            type: 'raster',
-            tiles: ['https://tile.opentopomap.org/{z}/{x}/{y}.png'],
-            tileSize: 256,
-            attribution: '© OpenTopoMap (CC-BY-SA)',
-          },
-          satelliteSource: {
-            type: 'raster',
-            tiles: [
-              'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
-            ],
-            tileSize: 256,
-            attribution: 'Satellite Imagery',
-          },
-        },
-        layers: [
-          {
-            id: 'background-canvas',
-            type: 'background',
-            paint: { 'background-color': '#EFECE4' },
-          },
-          {
-            id: 'osm-base-layer',
-            type: 'raster',
-            source: 'osmBase',
-            layout: { visibility: 'visible' },
-          },
-          {
-            id: 'satellite-layer',
-            type: 'raster',
-            source: 'satelliteSource',
-            layout: { visibility: 'none' },
-          },
-          {
-            id: 'topo-contours-layer',
-            type: 'raster',
-            source: 'openTopo',
-            paint: { 'raster-opacity': 0.62 },
-            layout: { visibility: 'visible' },
-          },
-          {
-            id: 'hillshade-tint-layer',
-            type: 'raster',
-            source: 'openTopo',
-            paint: {
-              'raster-opacity': 0.22,
-              'raster-contrast': 0.35,
-            },
-            layout: { visibility: 'visible' },
-          },
-        ],
-      },
+      style: createOrganicOutdoorStyle({
+        darkMode: false,
+        includeOsmFallbackSource: true,
+        showOsmFallback: false,
+        showBaseOutdoor: layerStateRef.current.baseOutdoor,
+      }),
     });
 
     map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'bottom-right');
@@ -212,7 +173,62 @@ export const MapLibreOutdoorMap: React.FC<MapLibreOutdoorMapProps> = ({
       setBearing(Math.round(map.getBearing()));
     });
 
+    map.on('error', (evt: { sourceId?: string }) => {
+      if (evt?.sourceId === 'openmaptiles' && !osmFallbackActiveRef.current) {
+        osmFallbackActiveRef.current = true;
+        if (map.getLayer('osm-fallback-layer')) {
+          map.setLayoutProperty(
+            'osm-fallback-layer',
+            'visibility',
+            layerStateRef.current.baseOutdoor ? 'visible' : 'none'
+          );
+        }
+      }
+    });
+
     map.on('load', () => {
+      // Topographic & Satellite overlay sources (strictly capped to prevent watermark artifacts)
+      map.addSource('satelliteSource', {
+        type: 'raster',
+        tiles: [
+          'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+        ],
+        tileSize: 256,
+        maxzoom: 18,
+        attribution: 'Satellite Imagery',
+      });
+      map.addLayer({
+        id: 'satellite-layer',
+        type: 'raster',
+        source: 'satelliteSource',
+        layout: { visibility: layerStateRef.current.satellite ? 'visible' : 'none' },
+      });
+
+      map.addSource('openTopo', {
+        type: 'raster',
+        tiles: ['https://tile.opentopomap.org/{z}/{x}/{y}.png'],
+        tileSize: 256,
+        maxzoom: 17,
+        attribution: '© OpenTopoMap (CC-BY-SA)',
+      });
+      map.addLayer({
+        id: 'topo-contours-layer',
+        type: 'raster',
+        source: 'openTopo',
+        paint: { 'raster-opacity': 0.48 },
+        layout: { visibility: layerStateRef.current.contours ? 'visible' : 'none' },
+      });
+      map.addLayer({
+        id: 'hillshade-tint-layer',
+        type: 'raster',
+        source: 'openTopo',
+        paint: {
+          'raster-opacity': 0.2,
+          'raster-contrast': 0.35,
+        },
+        layout: { visibility: layerStateRef.current.hillshade ? 'visible' : 'none' },
+      });
+
       // Offline region boxes source
       map.addSource('offline-regions', {
         type: 'geojson',
@@ -465,7 +481,7 @@ export const MapLibreOutdoorMap: React.FC<MapLibreOutdoorMapProps> = ({
     setVis('satellite-layer', layerState.satellite);
     setVis('topo-contours-layer', layerState.contours);
     if (map.getLayer('topo-contours-layer')) {
-      const opacity = layerState.satellite ? 0.48 : layerState.baseOutdoor ? 0.62 : 0.96;
+      const opacity = layerState.satellite ? 0.45 : layerState.baseOutdoor ? 0.52 : 0.96;
       map.setPaintProperty('topo-contours-layer', 'raster-opacity', opacity);
     }
     setVis('hillshade-tint-layer', layerState.hillshade);

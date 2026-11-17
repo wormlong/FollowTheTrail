@@ -105,6 +105,20 @@ async function initTrailDatabase(): Promise<SQLite.SQLiteDatabase> {
       updated_at INTEGER NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS user_profile (
+      id TEXT PRIMARY KEY NOT NULL,
+      nickname TEXT NOT NULL DEFAULT '山野行者',
+      home_region TEXT NOT NULL DEFAULT '',
+      emergency_contact_name TEXT NOT NULL DEFAULT '',
+      emergency_contact_phone TEXT NOT NULL DEFAULT '',
+      sos_note TEXT NOT NULL DEFAULT '',
+      updated_at INTEGER NOT NULL DEFAULT 0
+    );
+
+    INSERT OR IGNORE INTO user_profile (
+      id, nickname, home_region, emergency_contact_name, emergency_contact_phone, sos_note, updated_at
+    ) VALUES ('default', '山野行者', '', '', '', '', 0);
+
     CREATE INDEX IF NOT EXISTS idx_points_track_seq ON track_points(track_id, seq);
     CREATE INDEX IF NOT EXISTS idx_waypoints_track ON waypoints(track_id);
     CREATE INDEX IF NOT EXISTS idx_photos_track ON photos(track_id);

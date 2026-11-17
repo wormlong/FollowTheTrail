@@ -28,8 +28,8 @@ interface MinimalRecordViewProps {
 
 const MINIMAL_LAYERS: MapLayersState = {
   baseOutdoor: true,
-  contours: true,
-  hillshade: true,
+  contours: false,
+  hillshade: false,
   satellite: false,
   historicalTracks: false,
   activeTrack: true,

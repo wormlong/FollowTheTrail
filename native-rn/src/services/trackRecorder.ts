@@ -46,6 +46,7 @@ class TrackRecorderService {
   private listeners = new Set<Listener>();
   private foregroundSub: Location.LocationSubscription | null = null;
   private headingSub: Location.LocationSubscription | null = null;
+  private lastHeadingEmitAt: number = 0;
   private movingTimer: ReturnType<typeof setInterval> | null = null;
   private segmentId: string | null = null;
   private versionId: string | null = null;
@@ -142,11 +143,13 @@ class TrackRecorderService {
               : null;
         if (raw === null || !Number.isFinite(raw)) return;
         const normalized = ((raw % 360) + 360) % 360;
+        const now = Date.now();
         const prev = this.state.headingDegrees;
         if (prev !== null) {
           const angularDiff = Math.abs(((normalized - prev + 540) % 360) - 180);
-          if (angularDiff < 2) return;
+          if (angularDiff < 3 || now - this.lastHeadingEmitAt < 80) return;
         }
+        this.lastHeadingEmitAt = now;
         this.emit({ headingDegrees: normalized });
       });
     } catch {

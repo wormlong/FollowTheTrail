@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import {
   Pressable,
   StyleSheet,
@@ -52,6 +52,12 @@ export const RecordScreen: React.FC<RecordScreenProps> = ({
       trackRecorder.stopHeadingWatch();
       unsub();
     };
+  }, []);
+
+  const handlePressLocate = useCallback(async () => {
+    const pos = await trackRecorder.refreshCurrentPosition();
+    await trackRecorder.startHeadingWatch();
+    return pos;
   }, []);
 
   const handleStart = async () => {
@@ -111,11 +117,7 @@ export const RecordScreen: React.FC<RecordScreenProps> = ({
         headingDegrees={telemetry.headingDegrees}
         referenceCoordinates={referenceGuide?.coordinates ?? null}
         darkMode={darkMode}
-        onPressLocate={async () => {
-          const pos = await trackRecorder.refreshCurrentPosition();
-          await trackRecorder.startHeadingWatch();
-          return pos;
-        }}
+        onPressLocate={handlePressLocate}
       />
 
       {/* Minimal Status / Reference Route / Camera Feedback Notice */}

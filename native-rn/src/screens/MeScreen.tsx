@@ -1,17 +1,20 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   FlatList,
   Image,
+  KeyboardAvoidingView,
   Modal,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   useColorScheme,
   View,
 } from 'react-native';
 import { useIsFocused } from '@react-navigation/native';
-import { ChevronRight, Download, Share2, Trash2, X } from 'lucide-react-native';
+import { ChevronRight, Download, Share2, ShieldAlert, Trash2, UserCheck, X } from 'lucide-react-native';
 import { openTrailDatabase } from '../db/schema';
 import { exportAndShareTrackGpx } from '../services/gpxService';
 import {
@@ -30,6 +33,16 @@ interface TrackRow {
   moving_time_ms: number;
   avg_speed_mps: number;
   ascent_meters: number;
+  max_altitude_meters: number;
+}
+
+interface UserProfileRow {
+  id: string;
+  nickname: string;
+  home_region: string;
+  emergency_contact_name: string;
+  emergency_contact_phone: string;
+  sos_note: string;
 }
 
 interface TrackPhotoRow {
@@ -60,6 +73,17 @@ export const MeScreen: React.FC<{ highlightedTrackId?: string | null }> = ({
   const [selectedPhotos, setSelectedPhotos] = useState<TrackPhotoRow[]>([]);
   const [statusNotice, setStatusNotice] = useState<string | null>(null);
   const [offlineModalOpen, setOfflineModalOpen] = useState(false);
+  const [profileModalOpen, setProfileModalOpen] = useState(false);
+  const [profile, setProfile] = useState<UserProfileRow>({
+    id: 'default',
+    nickname: '山野行者',
+    home_region: '',
+    emergency_contact_name: '',
+    emergency_contact_phone: '',
+    sos_note: '',
+  });
+  const [totalPhotosCount, setTotalPhotosCount] = useState<number>(0);
+  const [profileSavedHint, setProfileSavedHint] = useState<string | null>(null);
   const [downloadedPackNames, setDownloadedPackNames] = useState<Set<string>>(new Set());
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
   const [downloadProgress, setDownloadProgress] = useState<number>(0);
@@ -67,7 +91,7 @@ export const MeScreen: React.FC<{ highlightedTrackId?: string | null }> = ({
   const reloadTracks = useCallback(async (focusId?: string | null) => {
     const db = await openTrailDatabase();
     const rows = await db.getAllAsync<TrackRow>(
-      `SELECT id, name, started_at, distance_meters, moving_time_ms, avg_speed_mps, ascent_meters
+      `SELECT id, name, started_at, distance_meters, moving_time_ms, avg_speed_mps, ascent_meters, max_altitude_meters
        FROM tracks
        WHERE (source IS NULL OR source = 'recorded') AND id NOT LIKE 'imp-%'
        ORDER BY started_at DESC`
@@ -79,11 +103,74 @@ export const MeScreen: React.FC<{ highlightedTrackId?: string | null }> = ({
     }
   }, []);
 
+  const loadProfileAndArchive = useCallback(async () => {
+    try {
+      const db = await openTrailDatabase();
+      const row = await db.getFirstAsync<UserProfileRow>(
+        `SELECT id, nickname, home_region, emergency_contact_name, emergency_contact_phone, sos_note
+         FROM user_profile WHERE id = 'default'`
+      );
+      if (row) {
+        setProfile(row);
+      }
+      const photoAgg = await db.getFirstAsync<{ cnt: number }>(
+        `SELECT COUNT(*) AS cnt FROM photos`
+      );
+      setTotalPhotosCount(photoAgg?.cnt ?? 0);
+    } catch {
+      // Keep defaults if DB busy
+    }
+  }, []);
+
+  const saveProfile = async () => {
+    const db = await openTrailDatabase();
+    await db.runAsync(
+      `INSERT INTO user_profile (
+         id, nickname, home_region, emergency_contact_name, emergency_contact_phone, sos_note, updated_at
+       ) VALUES ('default', ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         nickname = excluded.nickname,
+         home_region = excluded.home_region,
+         emergency_contact_name = excluded.emergency_contact_name,
+         emergency_contact_phone = excluded.emergency_contact_phone,
+         sos_note = excluded.sos_note,
+         updated_at = excluded.updated_at`,
+      [
+        profile.nickname.trim() || '山野行者',
+        profile.home_region.trim(),
+        profile.emergency_contact_name.trim(),
+        profile.emergency_contact_phone.trim(),
+        profile.sos_note.trim(),
+        Date.now(),
+      ]
+    );
+    setProfileSavedHint('已保存至本地户外档案');
+    setTimeout(() => setProfileSavedHint(null), 2200);
+  };
+
+  const archiveSummary = useMemo(() => {
+    const totalDistanceKm = tracks.reduce((s, t) => s + (t.distance_meters || 0) / 1000, 0);
+    const totalMovingMs = tracks.reduce((s, t) => s + (t.moving_time_ms || 0), 0);
+    const totalAscentM = tracks.reduce((s, t) => s + (t.ascent_meters || 0), 0);
+    const maxAltitudeM = tracks.reduce(
+      (max, t) => (t.max_altitude_meters > max ? t.max_altitude_meters : max),
+      0
+    );
+    return {
+      count: tracks.length,
+      totalDistanceKm,
+      totalMovingMs,
+      totalAscentM,
+      maxAltitudeM,
+    };
+  }, [tracks]);
+
   useEffect(() => {
     if (isFocused) {
       reloadTracks(highlightedTrackId);
+      loadProfileAndArchive();
     }
-  }, [isFocused, highlightedTrackId, reloadTracks]);
+  }, [isFocused, highlightedTrackId, reloadTracks, loadProfileAndArchive]);
 
   useEffect(() => {
     if (!selectedTrack) {
@@ -120,10 +207,22 @@ export const MeScreen: React.FC<{ highlightedTrackId?: string | null }> = ({
       <Text style={[styles.header, { color: theme.textPrimary }]}>我的</Text>
 
       <View style={[styles.menuGroup, { backgroundColor: theme.surface, borderColor: theme.border }]}>
-        <View style={styles.menuRow}>
-          <Text style={[styles.menuText, { color: theme.textPrimary }]}>个人资料与户外档案</Text>
+        <Pressable
+          onPress={() => {
+            setProfileSavedHint(null);
+            loadProfileAndArchive();
+            setProfileModalOpen(true);
+          }}
+          style={styles.menuRow}
+        >
+          <View>
+            <Text style={[styles.menuText, { color: theme.textPrimary }]}>个人资料与户外档案</Text>
+            <Text style={[styles.menuSubText, { color: theme.textSecondary }]}>
+              {profile.nickname} · {archiveSummary.count} 条记录 · {archiveSummary.totalDistanceKm.toFixed(1)} km
+            </Text>
+          </View>
           <ChevronRight size={16} color={theme.textSecondary} />
-        </View>
+        </Pressable>
         <Pressable
           onPress={() => {
             refreshOfflinePacks();
@@ -327,6 +426,163 @@ export const MeScreen: React.FC<{ highlightedTrackId?: string | null }> = ({
           </View>
         </View>
       </Modal>
+      {/* Personal Profile & Outdoor Archive Modal */}
+      <Modal
+        visible={profileModalOpen}
+        animationType="slide"
+        transparent
+        onRequestClose={() => setProfileModalOpen(false)}
+      >
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          style={styles.modalBackdrop}
+        >
+          <View style={[styles.modalSheet, { backgroundColor: theme.surface, maxHeight: '88%' }]}>
+            <View style={styles.modalHeader}>
+              <View style={styles.modalTitleRow}>
+                <UserCheck size={18} color={theme.primary} />
+                <Text style={[styles.modalTitle, { color: theme.textPrimary }]}>
+                  个人资料与户外档案
+                </Text>
+              </View>
+              <Pressable onPress={() => setProfileModalOpen(false)} hitSlop={8}>
+                <X size={20} color={theme.textSecondary} />
+              </Pressable>
+            </View>
+
+            <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ gap: 14 }}>
+              <View style={[styles.metricsRow, { borderColor: theme.border }]}>
+                <View style={styles.metricCell}>
+                  <Text style={[styles.metricLabel, { color: theme.textSecondary }]}>轨迹</Text>
+                  <Text style={[styles.metricVal, { color: theme.textPrimary }]}>
+                    {archiveSummary.count} 条
+                  </Text>
+                </View>
+                <View style={styles.metricCell}>
+                  <Text style={[styles.metricLabel, { color: theme.textSecondary }]}>总里程</Text>
+                  <Text style={[styles.metricVal, { color: theme.textPrimary }]}>
+                    {archiveSummary.totalDistanceKm.toFixed(1)} km
+                  </Text>
+                </View>
+                <View style={styles.metricCell}>
+                  <Text style={[styles.metricLabel, { color: theme.textSecondary }]}>总爬升</Text>
+                  <Text style={[styles.metricVal, { color: theme.textPrimary }]}>
+                    +{Math.round(archiveSummary.totalAscentM)} m
+                  </Text>
+                </View>
+                <View style={styles.metricCell}>
+                  <Text style={[styles.metricLabel, { color: theme.textSecondary }]}>照片</Text>
+                  <Text style={[styles.metricVal, { color: theme.textPrimary }]}>
+                    {totalPhotosCount} 张
+                  </Text>
+                </View>
+              </View>
+
+              <View style={[styles.archiveMetaRow, { borderColor: theme.border }]}>
+                <Text style={[styles.trackMeta, { color: theme.textSecondary }]}>
+                  累计用时 {formatDuration(archiveSummary.totalMovingMs)} · 最高海拔{' '}
+                  {archiveSummary.maxAltitudeM > 0
+                    ? `${Math.round(archiveSummary.maxAltitudeM)} m`
+                    : '--'}
+                </Text>
+              </View>
+
+              <View style={styles.fieldGroup}>
+                <Text style={[styles.fieldLabel, { color: theme.textSecondary }]}>户外昵称</Text>
+                <TextInput
+                  value={profile.nickname}
+                  onChangeText={(v) => setProfile((p) => ({ ...p, nickname: v }))}
+                  placeholder="输入你的户外昵称"
+                  placeholderTextColor={theme.textMuted}
+                  style={[
+                    styles.input,
+                    { color: theme.textPrimary, borderColor: theme.border, backgroundColor: theme.background },
+                  ]}
+                />
+              </View>
+
+              <View style={styles.fieldGroup}>
+                <Text style={[styles.fieldLabel, { color: theme.textSecondary }]}>常去徒步区域</Text>
+                <TextInput
+                  value={profile.home_region}
+                  onChangeText={(v) => setProfile((p) => ({ ...p, home_region: v }))}
+                  placeholder="例如：长沙岳麓山 / 武功山"
+                  placeholderTextColor={theme.textMuted}
+                  style={[
+                    styles.input,
+                    { color: theme.textPrimary, borderColor: theme.border, backgroundColor: theme.background },
+                  ]}
+                />
+              </View>
+
+              <View style={styles.safetyHeaderRow}>
+                <ShieldAlert size={15} color={theme.accent} />
+                <Text style={[styles.sectionTitle, { color: theme.textPrimary }]}>
+                  应急安全档案（本地离线保存）
+                </Text>
+              </View>
+
+              <View style={styles.fieldGroup}>
+                <Text style={[styles.fieldLabel, { color: theme.textSecondary }]}>紧急联系人</Text>
+                <TextInput
+                  value={profile.emergency_contact_name}
+                  onChangeText={(v) => setProfile((p) => ({ ...p, emergency_contact_name: v }))}
+                  placeholder="姓名"
+                  placeholderTextColor={theme.textMuted}
+                  style={[
+                    styles.input,
+                    { color: theme.textPrimary, borderColor: theme.border, backgroundColor: theme.background },
+                  ]}
+                />
+              </View>
+
+              <View style={styles.fieldGroup}>
+                <Text style={[styles.fieldLabel, { color: theme.textSecondary }]}>紧急联系电话</Text>
+                <TextInput
+                  value={profile.emergency_contact_phone}
+                  onChangeText={(v) => setProfile((p) => ({ ...p, emergency_contact_phone: v }))}
+                  placeholder="手机号"
+                  keyboardType="phone-pad"
+                  placeholderTextColor={theme.textMuted}
+                  style={[
+                    styles.input,
+                    { color: theme.textPrimary, borderColor: theme.border, backgroundColor: theme.background },
+                  ]}
+                />
+              </View>
+
+              <View style={styles.fieldGroup}>
+                <Text style={[styles.fieldLabel, { color: theme.textSecondary }]}>健康与安全备注</Text>
+                <TextInput
+                  value={profile.sos_note}
+                  onChangeText={(v) => setProfile((p) => ({ ...p, sos_note: v }))}
+                  placeholder="血型、过敏史或装备说明（选填）"
+                  placeholderTextColor={theme.textMuted}
+                  multiline
+                  style={[
+                    styles.input,
+                    styles.inputMultiline,
+                    { color: theme.textPrimary, borderColor: theme.border, backgroundColor: theme.background },
+                  ]}
+                />
+              </View>
+
+              {profileSavedHint && (
+                <Text style={[styles.noticeText, { color: theme.primary, marginBottom: 0 }]}>
+                  {profileSavedHint}
+                </Text>
+              )}
+
+              <Pressable
+                onPress={saveProfile}
+                style={[styles.exportBtn, { backgroundColor: theme.primary, marginTop: 2 }]}
+              >
+                <Text style={styles.exportBtnText}>保存个人资料</Text>
+              </Pressable>
+            </ScrollView>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
     </View>
   );
 };
@@ -343,6 +599,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   menuText: { fontSize: 15, fontWeight: '500' },
+  menuSubText: { fontSize: 12, marginTop: 2 },
   sectionHeaderRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -405,5 +662,41 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 12,
+  },
+  modalTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  archiveMetaRow: {
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    alignItems: 'center',
+  },
+  safetyHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginTop: 4,
+  },
+  fieldGroup: {
+    gap: 6,
+  },
+  fieldLabel: {
+    fontSize: 12,
+    fontWeight: '500',
+  },
+  input: {
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontSize: 14,
+  },
+  inputMultiline: {
+    minHeight: 68,
+    textAlignVertical: 'top',
   },
 });
