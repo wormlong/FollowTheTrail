@@ -165,95 +165,116 @@ class TrackRecorderService {
   }
 
   async recoverInterruptedTrack(): Promise<void> {
-    const db = await openTrailDatabase();
-    const row = await db.getFirstAsync<{
-      id: string;
-      status: string;
-      started_at: number;
-      distance_meters: number;
-      moving_time_ms: number;
-      active_version_id: string;
-    }>(
-      `SELECT id, status, started_at, distance_meters, moving_time_ms, active_version_id
-       FROM tracks
-       WHERE status IN ('recording', 'paused')
-       ORDER BY started_at DESC LIMIT 1`
-    );
-    if (!row) return;
-
-    this.versionId = row.active_version_id;
-    this.startedAtMs = row.started_at;
-
-    const pts = await db.getAllAsync<{
-      id: string;
-      track_id: string;
-      segment_id: string;
-      seq: number;
-      latitude: number;
-      longitude: number;
-      altitude_meters: number;
-      accuracy_meters: number;
-      speed_mps: number;
-      timestamp: number;
-      is_raw: number;
-    }>(`SELECT * FROM track_points WHERE track_id = ? ORDER BY seq ASC`, [row.id]);
-
-    const mapped: TrackPoint[] = pts.map((p) => ({
-      id: p.id,
-      trackId: p.track_id,
-      segmentId: p.segment_id,
-      seq: p.seq,
-      latitude: p.latitude,
-      longitude: p.longitude,
-      altitudeMeters: p.altitude_meters,
-      accuracyMeters: p.accuracy_meters,
-      speedMps: p.speed_mps,
-      timestamp: p.timestamp,
-      isRaw: Boolean(p.is_raw),
-    }));
-
-    if (mapped.length > 0) {
-      this.segmentId = mapped[mapped.length - 1].segmentId;
-    } else {
-      const segRow = await db.getFirstAsync<{ id: string }>(
-        `SELECT id FROM track_segments WHERE track_id = ? ORDER BY segment_index DESC LIMIT 1`,
-        [row.id]
+    try {
+      const db = await openTrailDatabase();
+      const row = await db.getFirstAsync<{
+        id: string;
+        status: string;
+        started_at: number;
+        distance_meters: number;
+        moving_time_ms: number;
+        active_version_id: string;
+      }>(
+        `SELECT id, status, started_at, distance_meters, moving_time_ms, active_version_id
+         FROM tracks
+         WHERE status IN ('recording', 'paused')
+         ORDER BY started_at DESC LIMIT 1`
       );
-      this.segmentId = segRow?.id ?? null;
-    }
+      if (!row) return;
 
-    const last = mapped[mapped.length - 1];
-    this.emit({
-      status: 'paused',
-      trackId: row.id,
-      distanceMeters: row.distance_meters,
-      movingTimeMs: row.moving_time_ms,
-      avgSpeedKmh: this.computeAvgSpeedKmh(row.distance_meters, row.moving_time_ms),
-      currentAltitudeMeters: last ? last.altitudeMeters : null,
-      currentLocation: last
-        ? { latitude: last.latitude, longitude: last.longitude, accuracy: last.accuracyMeters }
-        : null,
-      points: mapped,
-    });
+      this.versionId = row.active_version_id;
+      this.startedAtMs = row.started_at;
+
+      const pts = await db.getAllAsync<{
+        id: string;
+        track_id: string;
+        segment_id: string;
+        seq: number;
+        latitude: number;
+        longitude: number;
+        altitude_meters: number;
+        accuracy_meters: number;
+        speed_mps: number;
+        timestamp: number;
+        is_raw: number;
+      }>(`SELECT * FROM track_points WHERE track_id = ? ORDER BY seq ASC`, [row.id]);
+
+      const mapped: TrackPoint[] = pts.map((p) => ({
+        id: p.id,
+        trackId: p.track_id,
+        segmentId: p.segment_id,
+        seq: p.seq,
+        latitude: p.latitude,
+        longitude: p.longitude,
+        altitudeMeters: p.altitude_meters,
+        accuracyMeters: p.accuracy_meters,
+        speedMps: p.speed_mps,
+        timestamp: p.timestamp,
+        isRaw: Boolean(p.is_raw),
+      }));
+
+      if (mapped.length > 0) {
+        this.segmentId = mapped[mapped.length - 1].segmentId;
+      } else {
+        const segRow = await db.getFirstAsync<{ id: string }>(
+          `SELECT id FROM track_segments WHERE track_id = ? ORDER BY segment_index DESC LIMIT 1`,
+          [row.id]
+        );
+        this.segmentId = segRow?.id ?? null;
+      }
+
+      const last = mapped[mapped.length - 1];
+      this.emit({
+        status: 'paused',
+        trackId: row.id,
+        distanceMeters: row.distance_meters,
+        movingTimeMs: row.moving_time_ms,
+        avgSpeedKmh: this.computeAvgSpeedKmh(row.distance_meters, row.moving_time_ms),
+        currentAltitudeMeters: last ? last.altitudeMeters : null,
+        currentLocation: last
+          ? { latitude: last.latitude, longitude: last.longitude, accuracy: last.accuracyMeters }
+          : null,
+        points: mapped,
+      });
+    } catch {
+      // Non-fatal: do not block app launch if interrupted track recovery encounters a busy DB
+    }
   }
 
   async startRecording(): Promise<boolean> {
-    const fg = await Location.requestForegroundPermissionsAsync();
-    if (fg.status !== 'granted') {
-      this.emit({ errorMessage: '需要开启位置权限才能开始真实 GPS 轨迹记录。' });
-      return false;
-    }
+    try {
+      const fg = await Location.requestForegroundPermissionsAsync();
+      if (fg.status !== 'granted') {
+        this.emit({ errorMessage: '需要开启位置权限才能开始真实 GPS 轨迹记录。' });
+        return false;
+      }
 
-    // Android 10+ requires two-step foreground -> background ("Always allow") permission
-    const bg = await Location.requestBackgroundPermissionsAsync();
-    const bgWarning =
-      bg.status !== 'granted'
+      let bgGranted = false;
+      try {
+        // Android 10+ requires two-step foreground -> background ("Always allow") permission
+        const bg = await Location.requestBackgroundPermissionsAsync();
+        bgGranted = bg.status === 'granted';
+      } catch {
+        bgGranted = false;
+      }
+
+      const bgWarning = !bgGranted
         ? '未授予「始终允许后台定位」，锁屏或切后台将暂停记录，请在系统设置中开启。'
         : null;
 
-    const initialLoc = await Location.getCurrentPositionAsync({
-      accuracy: Location.Accuracy.BestForNavigation,
-    });
+      let initialLoc: Location.LocationObject | null = null;
+      try {
+        initialLoc = await Location.getCurrentPositionAsync({
+          accuracy: Location.Accuracy.BestForNavigation,
+        });
+      } catch {
+        initialLoc = await Location.getLastKnownPositionAsync();
+      }
+
+      if (!initialLoc) {
+        this.emit({ errorMessage: '暂未获取到有效 GPS 定位，请确认手机定位已开启后重试。' });
+        return false;
+      }
 
     const now = Date.now();
     const trackId = makeUuid('trk');
@@ -343,8 +364,12 @@ class TrackRecorderService {
       errorMessage: bgWarning,
     });
 
-    await this.startGpsStreams(bg.status === 'granted');
-    return true;
+      await this.startGpsStreams(bgGranted);
+      return true;
+    } catch {
+      this.emit({ errorMessage: '启动 GPS 轨迹记录失败，请检查定位与存储权限。' });
+      return false;
+    }
   }
 
   private async startGpsStreams(backgroundGranted: boolean) {
@@ -364,18 +389,24 @@ class TrackRecorderService {
     }, 1000);
 
     if (backgroundGranted) {
-      const hasBg = await Location.hasStartedLocationUpdatesAsync(BACKGROUND_LOCATION_TASK);
-      if (!hasBg) {
-        await Location.startLocationUpdatesAsync(BACKGROUND_LOCATION_TASK, {
-          accuracy: Location.Accuracy.BestForNavigation,
-          timeInterval: 3000,
-          distanceInterval: 3,
-          foregroundService: {
-            notificationTitle: '跟夕走 · 正在记录徒步轨迹',
-            notificationBody: '离线 GPS 持续记录中',
-            notificationColor: '#1E352B',
-          },
-          pausesUpdatesAutomatically: false,
+      try {
+        const hasBg = await Location.hasStartedLocationUpdatesAsync(BACKGROUND_LOCATION_TASK);
+        if (!hasBg) {
+          await Location.startLocationUpdatesAsync(BACKGROUND_LOCATION_TASK, {
+            accuracy: Location.Accuracy.BestForNavigation,
+            timeInterval: 3000,
+            distanceInterval: 3,
+            foregroundService: {
+              notificationTitle: '跟夕走 · 正在记录徒步轨迹',
+              notificationBody: '离线 GPS 持续记录中',
+              notificationColor: '#1E352B',
+            },
+            pausesUpdatesAutomatically: false,
+          });
+        }
+      } catch {
+        this.emit({
+          errorMessage: '后台前台服务未就绪，已切换为前台持续记录模式。',
         });
       }
     }
@@ -449,24 +480,38 @@ class TrackRecorderService {
     if (this.state.status !== 'recording') return;
     this.stopTimersAndWatchers();
     setActiveRecordingContext(null);
-    const hasBg = await Location.hasStartedLocationUpdatesAsync(BACKGROUND_LOCATION_TASK);
-    if (hasBg) {
-      await Location.stopLocationUpdatesAsync(BACKGROUND_LOCATION_TASK);
+    try {
+      const hasBg = await Location.hasStartedLocationUpdatesAsync(BACKGROUND_LOCATION_TASK);
+      if (hasBg) {
+        await Location.stopLocationUpdatesAsync(BACKGROUND_LOCATION_TASK);
+      }
+    } catch {
+      // Ignore background location teardown errors
     }
     this.emit({ status: 'paused' });
     if (this.state.trackId) {
-      const db = await openTrailDatabase();
-      await db.runAsync(`UPDATE tracks SET status = 'paused', moving_time_ms = ? WHERE id = ?`, [
-        this.state.movingTimeMs,
-        this.state.trackId,
-      ]);
+      try {
+        const db = await openTrailDatabase();
+        await db.runAsync(`UPDATE tracks SET status = 'paused', moving_time_ms = ? WHERE id = ?`, [
+          this.state.movingTimeMs,
+          this.state.trackId,
+        ]);
+      } catch {
+        // Ignore transient SQLite lock on pause
+      }
     }
   }
 
   async resumeRecording(): Promise<void> {
     if (this.state.status !== 'paused' || !this.state.trackId) return;
 
-    const bg = await Location.getBackgroundPermissionsAsync();
+    let bgGranted = false;
+    try {
+      const bg = await Location.getBackgroundPermissionsAsync();
+      bgGranted = bg.status === 'granted';
+    } catch {
+      bgGranted = false;
+    }
     const db = await openTrailDatabase();
     if (!this.segmentId) {
       const newSegId = makeUuid('seg');
@@ -531,15 +576,19 @@ class TrackRecorderService {
 
     this.emit({ status: 'recording', points: mapped });
     await db.runAsync(`UPDATE tracks SET status = 'recording' WHERE id = ?`, [this.state.trackId]);
-    await this.startGpsStreams(bg.status === 'granted');
+    await this.startGpsStreams(bgGranted);
   }
 
   async stopAndSaveRecording(): Promise<string | null> {
     this.stopTimersAndWatchers();
     setActiveRecordingContext(null);
-    const hasBg = await Location.hasStartedLocationUpdatesAsync(BACKGROUND_LOCATION_TASK);
-    if (hasBg) {
-      await Location.stopLocationUpdatesAsync(BACKGROUND_LOCATION_TASK);
+    try {
+      const hasBg = await Location.hasStartedLocationUpdatesAsync(BACKGROUND_LOCATION_TASK);
+      if (hasBg) {
+        await Location.stopLocationUpdatesAsync(BACKGROUND_LOCATION_TASK);
+      }
+    } catch {
+      // Ignore background stop errors
     }
 
     const finishedTrackId = this.state.trackId;

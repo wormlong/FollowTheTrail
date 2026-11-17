@@ -15,29 +15,34 @@ const HEADING_IMAGES = {
 
 const COMPASS_MARGINS = { x: 16, y: 56 };
 
-const REFERENCE_LINE_STYLE = {
+const EMPTY_FEATURE_COLLECTION: GeoJSON.FeatureCollection = {
+  type: 'FeatureCollection',
+  features: [],
+};
+
+const REFERENCE_LINE_BASE = {
   lineColor: '#2D6A4F',
-  lineWidth: 3,
-  lineOpacity: 0.85,
+  lineWidth: 3.2,
+  lineOpacity: 0.88,
   lineDasharray: [2, 1.5],
   lineCap: 'round' as const,
   lineJoin: 'round' as const,
 };
 
-const LOCATION_HALO_STYLE = {
+const LOCATION_HALO_BASE = {
   circleRadius: 15,
   circleColor: '#B84F24',
   circleOpacity: 0.2,
 };
 
-const LOCATION_DOT_STYLE = {
+const LOCATION_DOT_BASE = {
   circleRadius: 7,
   circleColor: '#B84F24',
   circleStrokeColor: '#FFFFFF',
   circleStrokeWidth: 2.5,
 };
 
-const LOCATION_HEADING_STYLE = {
+const LOCATION_HEADING_BASE = {
   iconImage: 'user-heading-arrow',
   iconRotate: ['get', 'heading'] as ['get', string],
   iconRotationAlignment: 'map' as const,
@@ -47,6 +52,13 @@ const LOCATION_HEADING_STYLE = {
   iconAllowOverlap: true,
   iconIgnorePlacement: true,
 };
+
+const HEADING_FILTER: ['==', ['get', string], boolean] = ['==', ['get', 'showHeading'], true];
+
+const SATELLITE_TILES = [
+  'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+];
+const OPENTOPO_TILES = ['https://tile.opentopomap.org/{z}/{x}/{y}.png'];
 
 interface MapOverlayState {
   baseOutdoor: boolean;
@@ -89,9 +101,13 @@ const MapScreenInner: React.FC<MapScreenProps> = ({
   const cameraRef = useRef<React.ElementRef<typeof MapLibreGL.Camera>>(null);
   const followingUserRef = useRef<boolean>(true);
   const hasCenteredInitialRef = useRef<boolean>(false);
+  const mapReadyRef = useRef<boolean>(false);
+  const pendingCameraActionRef = useRef<(() => void) | null>(null);
+  const osmFallbackActivatedRef = useRef<boolean>(false);
 
   const [followingUi, setFollowingUi] = useState<boolean>(true);
   const [overlayMenuOpen, setOverlayMenuOpen] = useState<boolean>(false);
+  const [showOsmFallback, setShowOsmFallback] = useState<boolean>(false);
   const [overlays, setOverlays] = useState<MapOverlayState>({
     baseOutdoor: true,
     contours: false,
@@ -100,43 +116,106 @@ const MapScreenInner: React.FC<MapScreenProps> = ({
   });
   const theme = darkMode ? OutdoorColors.dark : OutdoorColors.light;
 
-  const trackLineStyle = useMemo(
-    () => ({
-      lineColor: theme.accent,
-      lineWidth: 3.5,
-      lineCap: 'round' as const,
-      lineJoin: 'round' as const,
-    }),
-    [theme.accent]
+  // Keep mapStyle string stable across overlay toggles; only regenerate when theme or fallback changes
+  const mapStyleJson = useMemo(
+    () =>
+      JSON.stringify(
+        createOrganicOutdoorStyle({
+          darkMode,
+          includeOsmFallbackSource: true,
+          showOsmFallback,
+          showBaseOutdoor: true,
+        })
+      ),
+    [darkMode, showOsmFallback]
   );
 
-  const trackGeoJson = useMemo(() => {
-    if (points.length < 2) return null;
+  // When base style changes, wait for onDidFinishLoadingStyle before invoking camera/source methods
+  useEffect(() => {
+    mapReadyRef.current = false;
+  }, [mapStyleJson]);
+
+  const runCameraWhenReady = useCallback((action: () => void) => {
+    if (!mapReadyRef.current) {
+      pendingCameraActionRef.current = action;
+      return;
+    }
+    try {
+      action();
+    } catch {
+      // Ignore transient camera errors if view is tearing down
+    }
+  }, []);
+
+  const syncBaseOutdoorVisibility = useCallback(
+    (visible: boolean, fallbackActive: boolean) => {
+      if (!mapReadyRef.current) return;
+      try {
+        mapViewRef.current?.setSourceVisibility(visible, 'openmaptiles');
+        mapViewRef.current?.setSourceVisibility(visible && fallbackActive, 'osmFallback');
+      } catch {
+        // Ignore if native map style is still reloading
+      }
+    },
+    []
+  );
+
+  useEffect(() => {
+    syncBaseOutdoorVisibility(overlays.baseOutdoor, showOsmFallback);
+  }, [overlays.baseOutdoor, showOsmFallback, syncBaseOutdoorVisibility]);
+
+  const handleDidFinishLoadingStyle = useCallback(() => {
+    mapReadyRef.current = true;
+    syncBaseOutdoorVisibility(overlays.baseOutdoor, showOsmFallback);
+    const pending = pendingCameraActionRef.current;
+    if (pending) {
+      pendingCameraActionRef.current = null;
+      try {
+        pending();
+      } catch {
+        // Ignore if view unmounted mid-callback
+      }
+    }
+  }, [overlays.baseOutdoor, showOsmFallback, syncBaseOutdoorVisibility]);
+
+  const handleDidFailLoadingMap = useCallback(() => {
+    if (!osmFallbackActivatedRef.current) {
+      osmFallbackActivatedRef.current = true;
+      setShowOsmFallback(true);
+    }
+  }, []);
+
+  const hasTrack = points.length >= 2;
+  const trackGeoJson = useMemo<GeoJSON.FeatureCollection>(() => {
+    if (!hasTrack) return EMPTY_FEATURE_COLLECTION;
     return {
-      type: 'FeatureCollection' as const,
+      type: 'FeatureCollection',
       features: [
         {
-          type: 'Feature' as const,
+          type: 'Feature',
           properties: {},
           geometry: {
-            type: 'LineString' as const,
+            type: 'LineString',
             coordinates: points.map((p) => [p.longitude, p.latitude]),
           },
         },
       ],
     };
-  }, [points]);
+  }, [hasTrack, points]);
 
-  const referenceGeoJson = useMemo(() => {
-    if (!referenceCoordinates || referenceCoordinates.length < 2) return null;
+  const hasReference = Boolean(referenceCoordinates && referenceCoordinates.length >= 2);
+  const referenceGeoJson = useMemo<GeoJSON.FeatureCollection>(() => {
+    if (!referenceCoordinates || referenceCoordinates.length < 2) {
+      return EMPTY_FEATURE_COLLECTION;
+    }
     return {
-      type: 'FeatureCollection' as const,
+      type: 'FeatureCollection',
       features: [
         {
-          type: 'Feature' as const,
+          type: 'Feature',
           properties: {},
           geometry: {
-            type: 'LineString' as const,
+            type: 'LineString',
             coordinates: referenceCoordinates,
           },
         },
@@ -144,49 +223,59 @@ const MapScreenInner: React.FC<MapScreenProps> = ({
     };
   }, [referenceCoordinates]);
 
-  const hasValidHeading =
-    typeof headingDegrees === 'number' && Number.isFinite(headingDegrees);
+  const hasLocation =
+    Boolean(currentLocation) &&
+    Number.isFinite(currentLocation?.latitude) &&
+    Number.isFinite(currentLocation?.longitude);
 
-  const currentLocationGeoJson = useMemo(() => {
-    if (!currentLocation) return null;
+  const hasValidHeading =
+    hasLocation && typeof headingDegrees === 'number' && Number.isFinite(headingDegrees);
+
+  const currentLocationGeoJson = useMemo<GeoJSON.FeatureCollection>(() => {
+    if (!currentLocation || !hasLocation) return EMPTY_FEATURE_COLLECTION;
     return {
-      type: 'FeatureCollection' as const,
+      type: 'FeatureCollection',
       features: [
         {
-          type: 'Feature' as const,
+          type: 'Feature',
           properties: {
             heading: hasValidHeading ? headingDegrees : 0,
+            showHeading: hasValidHeading,
           },
           geometry: {
-            type: 'Point' as const,
+            type: 'Point',
             coordinates: [currentLocation.longitude, currentLocation.latitude],
           },
         },
       ],
     };
-  }, [currentLocation, hasValidHeading, headingDegrees]);
+  }, [currentLocation, hasLocation, hasValidHeading, headingDegrees]);
 
   // Center once on initial GPS fix, and gently pan (preserving user's zoom!) only when following
   useEffect(() => {
-    if (!currentLocation) return;
+    if (!currentLocation || !hasLocation) return;
     if (!hasCenteredInitialRef.current) {
       hasCenteredInitialRef.current = true;
-      cameraRef.current?.setCamera({
-        centerCoordinate: [currentLocation.longitude, currentLocation.latitude],
-        zoomLevel: 15.8,
-        animationDuration: 350,
-        animationMode: 'easeTo',
+      runCameraWhenReady(() => {
+        cameraRef.current?.setCamera({
+          centerCoordinate: [currentLocation.longitude, currentLocation.latitude],
+          zoomLevel: 15.8,
+          animationDuration: 350,
+          animationMode: 'easeTo',
+        });
       });
       return;
     }
     if (followingUserRef.current) {
-      cameraRef.current?.setCamera({
-        centerCoordinate: [currentLocation.longitude, currentLocation.latitude],
-        animationDuration: 250,
-        animationMode: 'easeTo',
+      runCameraWhenReady(() => {
+        cameraRef.current?.setCamera({
+          centerCoordinate: [currentLocation.longitude, currentLocation.latitude],
+          animationDuration: 250,
+          animationMode: 'easeTo',
+        });
       });
     }
-  }, [currentLocation?.latitude, currentLocation?.longitude]);
+  }, [currentLocation?.latitude, currentLocation?.longitude, hasLocation, runCameraWhenReady]);
 
   useEffect(() => {
     if (!referenceCoordinates || referenceCoordinates.length < 2) return;
@@ -200,10 +289,23 @@ const MapScreenInner: React.FC<MapScreenProps> = ({
       if (lat < minLat) minLat = lat;
       if (lat > maxLat) maxLat = lat;
     }
+    // Guard against zero-span bounds which crash MapLibre Android LatLngBounds
+    if (maxLng - minLng < 0.002) {
+      const midLng = (minLng + maxLng) / 2;
+      minLng = midLng - 0.001;
+      maxLng = midLng + 0.001;
+    }
+    if (maxLat - minLat < 0.002) {
+      const midLat = (minLat + maxLat) / 2;
+      minLat = midLat - 0.001;
+      maxLat = midLat + 0.001;
+    }
     followingUserRef.current = false;
     setFollowingUi(false);
-    cameraRef.current?.fitBounds([maxLng, maxLat], [minLng, minLat], [72, 36, 180, 36], 450);
-  }, [referenceCoordinates]);
+    runCameraWhenReady(() => {
+      cameraRef.current?.fitBounds([maxLng, maxLat], [minLng, minLat], [72, 36, 180, 36], 450);
+    });
+  }, [referenceCoordinates, runCameraWhenReady]);
 
   const toggleOverlay = (key: keyof MapOverlayState) => {
     setOverlays((prev) => ({ ...prev, [key]: !prev[key] }));
@@ -216,37 +318,120 @@ const MapScreenInner: React.FC<MapScreenProps> = ({
     }
   }, []);
 
-  const handleZoomStep = useCallback(async (delta: number) => {
-    handleReleaseFollow();
-    try {
-      const currentZoom = (await mapViewRef.current?.getZoom()) ?? 15;
-      const targetZoom = Math.min(20.5, Math.max(3, currentZoom + delta));
-      cameraRef.current?.zoomTo(targetZoom, 220);
-    } catch {
-      // Ignore if map not yet initialized
-    }
-  }, [handleReleaseFollow]);
+  const handleZoomStep = useCallback(
+    async (delta: number) => {
+      handleReleaseFollow();
+      if (!mapReadyRef.current) return;
+      try {
+        const currentZoom = (await mapViewRef.current?.getZoom()) ?? 15;
+        const targetZoom = Math.min(20.5, Math.max(3, currentZoom + delta));
+        cameraRef.current?.zoomTo(targetZoom, 220);
+      } catch {
+        // Ignore if map not yet initialized
+      }
+    },
+    [handleReleaseFollow]
+  );
 
   const handleRecenter = async () => {
     followingUserRef.current = true;
     setFollowingUi(true);
     setOverlayMenuOpen(false);
-    const fresh = await onPressLocate?.();
-    const target =
-      fresh && typeof fresh === 'object' && 'latitude' in fresh ? fresh : currentLocation;
-    if (target) {
-      cameraRef.current?.setCamera({
-        centerCoordinate: [target.longitude, target.latitude],
-        zoomLevel: 16,
-        animationDuration: 350,
-        animationMode: 'easeTo',
-      });
+    try {
+      const fresh = await onPressLocate?.();
+      const target =
+        fresh && typeof fresh === 'object' && 'latitude' in fresh ? fresh : currentLocation;
+      if (target && Number.isFinite(target.latitude) && Number.isFinite(target.longitude)) {
+        runCameraWhenReady(() => {
+          cameraRef.current?.setCamera({
+            centerCoordinate: [target.longitude, target.latitude],
+            zoomLevel: 16.2,
+            animationDuration: 350,
+            animationMode: 'easeTo',
+          });
+        });
+      }
+    } catch {
+      // Errors surfaced via TrackRecorder telemetry banner
     }
   };
 
-  const mapStyleUrl = darkMode ? OFFLINE_DARK_STYLE : OFFLINE_BASE_STYLE;
-
   const contourOpacity = overlays.satellite ? 0.48 : overlays.baseOutdoor ? 0.52 : 0.96;
+
+  // All layer styles memoized cleanly with visibility toggling (never unmounting native layers!)
+  const satelliteLayerStyle = useMemo(
+    () => ({
+      visibility: (overlays.satellite ? 'visible' : 'none') as 'visible' | 'none',
+      rasterOpacity: 1,
+    }),
+    [overlays.satellite]
+  );
+
+  const contoursLayerStyle = useMemo(
+    () => ({
+      visibility: (overlays.contours ? 'visible' : 'none') as 'visible' | 'none',
+      rasterOpacity: contourOpacity,
+    }),
+    [overlays.contours, contourOpacity]
+  );
+
+  const hillshadeLayerStyle = useMemo(
+    () => ({
+      visibility: (overlays.hillshade ? 'visible' : 'none') as 'visible' | 'none',
+      rasterOpacity: 0.22,
+      rasterContrast: 0.35,
+    }),
+    [overlays.hillshade]
+  );
+
+  const referenceLineStyle = useMemo(
+    () => ({
+      ...REFERENCE_LINE_BASE,
+      visibility: (hasReference ? 'visible' : 'none') as 'visible' | 'none',
+    }),
+    [hasReference]
+  );
+
+  const trackLineStyle = useMemo(
+    () => ({
+      lineColor: theme.accent,
+      lineWidth: 3.5,
+      lineCap: 'round' as const,
+      lineJoin: 'round' as const,
+      visibility: (hasTrack ? 'visible' : 'none') as 'visible' | 'none',
+    }),
+    [theme.accent, hasTrack]
+  );
+
+  const locationHaloStyle = useMemo(
+    () => ({
+      ...LOCATION_HALO_BASE,
+      visibility: (hasLocation ? 'visible' : 'none') as 'visible' | 'none',
+    }),
+    [hasLocation]
+  );
+
+  const locationDotStyle = useMemo(
+    () => ({
+      ...LOCATION_DOT_BASE,
+      visibility: (hasLocation ? 'visible' : 'none') as 'visible' | 'none',
+    }),
+    [hasLocation]
+  );
+
+  const locationHeadingStyle = useMemo(
+    () => ({
+      ...LOCATION_HEADING_BASE,
+      visibility: (hasValidHeading ? 'visible' : 'none') as 'visible' | 'none',
+    }),
+    [hasValidHeading]
+  );
+
+  const [initialCenter] = useState<[number, number]>(() =>
+    currentLocation && Number.isFinite(currentLocation.latitude)
+      ? [currentLocation.longitude, currentLocation.latitude]
+      : [116.178, 39.994]
+  );
 
   return (
     <View
@@ -256,9 +441,7 @@ const MapScreenInner: React.FC<MapScreenProps> = ({
       <MapLibreGL.MapView
         ref={mapViewRef}
         style={styles.map}
-        mapStyle={mapStyleUrl}
-        preferredFramesPerSecond={120}
-        localizeLabels
+        mapStyle={mapStyleJson}
         zoomEnabled
         scrollEnabled
         rotateEnabled
@@ -268,6 +451,8 @@ const MapScreenInner: React.FC<MapScreenProps> = ({
         compassViewMargins={COMPASS_MARGINS}
         attributionEnabled={false}
         regionWillChangeDebounceTime={120}
+        onDidFinishLoadingStyle={handleDidFinishLoadingStyle}
+        onDidFailLoadingMap={handleDidFailLoadingMap}
         onPress={() => {
           if (overlayMenuOpen) setOverlayMenuOpen(false);
         }}
@@ -282,101 +467,71 @@ const MapScreenInner: React.FC<MapScreenProps> = ({
           minZoomLevel={2}
           maxZoomLevel={21}
           defaultSettings={{
-            centerCoordinate: currentLocation
-              ? [currentLocation.longitude, currentLocation.latitude]
-              : [116.178, 39.994],
+            centerCoordinate: initialCenter,
             zoomLevel: 14,
           }}
         />
 
         <MapLibreGL.Images images={HEADING_IMAGES} />
 
-        {/* Base Outdoor OSM Map (strict maxZoomLevel=19, clean single-layer default) */}
-        {overlays.baseOutdoor && (
-          <MapLibreGL.RasterSource
-            id="osm-outdoor-base"
-            tileUrlTemplates={['https://tile.openstreetmap.org/{z}/{x}/{y}.png']}
-            tileSize={256}
-            maxZoomLevel={19}
-          >
-            <MapLibreGL.RasterLayer id="osm-outdoor-layer" sourceID="osm-outdoor-base" />
-          </MapLibreGL.RasterSource>
-        )}
+        {/* Static Raster Overlay Sources (visibility toggled via Paint/Layout to avoid MLRNMapView index crashes) */}
+        <MapLibreGL.RasterSource
+          id="satellite-imagery"
+          tileUrlTemplates={SATELLITE_TILES}
+          tileSize={256}
+          maxZoomLevel={18}
+        >
+          <MapLibreGL.RasterLayer
+            id="satellite-imagery-layer"
+            sourceID="satellite-imagery"
+            style={satelliteLayerStyle}
+          />
+        </MapLibreGL.RasterSource>
 
-        {/* Satellite Imagery (strict maxZoomLevel=18) */}
-        {overlays.satellite && (
-          <MapLibreGL.RasterSource
-            id="satellite-imagery"
-            tileUrlTemplates={[
-              'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
-            ]}
-            tileSize={256}
-            maxZoomLevel={18}
-          >
-            <MapLibreGL.RasterLayer id="satellite-imagery-layer" sourceID="satellite-imagery" />
-          </MapLibreGL.RasterSource>
-        )}
+        <MapLibreGL.RasterSource
+          id="opentopo-contours"
+          tileUrlTemplates={OPENTOPO_TILES}
+          tileSize={256}
+          maxZoomLevel={17}
+        >
+          <MapLibreGL.RasterLayer
+            id="opentopo-contours-layer"
+            sourceID="opentopo-contours"
+            style={contoursLayerStyle}
+          />
+        </MapLibreGL.RasterSource>
 
-        {/* Topographic Contours Overlay (strict maxZoomLevel=17 prevents "max zoom layer = 17" watermark) */}
-        {overlays.contours && (
-          <MapLibreGL.RasterSource
-            id="opentopo-contours"
-            tileUrlTemplates={['https://tile.opentopomap.org/{z}/{x}/{y}.png']}
-            tileSize={256}
-            maxZoomLevel={17}
-          >
-            <MapLibreGL.RasterLayer
-              id="opentopo-contours-layer"
-              sourceID="opentopo-contours"
-              style={{ rasterOpacity: contourOpacity }}
-            />
-          </MapLibreGL.RasterSource>
-        )}
+        <MapLibreGL.RasterSource
+          id="hillshade-relief"
+          tileUrlTemplates={OPENTOPO_TILES}
+          tileSize={256}
+          maxZoomLevel={17}
+        >
+          <MapLibreGL.RasterLayer
+            id="hillshade-relief-layer"
+            sourceID="hillshade-relief"
+            style={hillshadeLayerStyle}
+          />
+        </MapLibreGL.RasterSource>
 
-        {/* Hillshade Relief Contrast Overlay (strict maxZoomLevel=17) */}
-        {overlays.hillshade && (
-          <MapLibreGL.RasterSource
-            id="hillshade-relief"
-            tileUrlTemplates={['https://tile.opentopomap.org/{z}/{x}/{y}.png']}
-            tileSize={256}
-            maxZoomLevel={17}
-          >
-            <MapLibreGL.RasterLayer
-              id="hillshade-relief-layer"
-              sourceID="hillshade-relief"
-              style={{
-                rasterOpacity: 0.22,
-                rasterContrast: 0.35,
-              }}
-            />
-          </MapLibreGL.RasterSource>
-        )}
+        {/* Static GeoJSON Sources (fixed child tree prevents MLRNSource.addLayer IndexOutOfBoundsException) */}
+        <MapLibreGL.ShapeSource id="reference-guide-source" shape={referenceGeoJson}>
+          <MapLibreGL.LineLayer id="reference-guide-line" style={referenceLineStyle} />
+        </MapLibreGL.ShapeSource>
 
-        {referenceGeoJson && (
-          <MapLibreGL.ShapeSource id="reference-guide-source" shape={referenceGeoJson}>
-            <MapLibreGL.LineLayer id="reference-guide-line" style={REFERENCE_LINE_STYLE} />
-          </MapLibreGL.ShapeSource>
-        )}
+        <MapLibreGL.ShapeSource id="recorded-track-source" shape={trackGeoJson}>
+          <MapLibreGL.LineLayer id="recorded-track-line" style={trackLineStyle} />
+        </MapLibreGL.ShapeSource>
 
-        {trackGeoJson && (
-          <MapLibreGL.ShapeSource id="recorded-track-source" shape={trackGeoJson}>
-            <MapLibreGL.LineLayer id="recorded-track-line" style={trackLineStyle} />
-          </MapLibreGL.ShapeSource>
-        )}
-
-        {/* Current Position Dot + Directional Heading Arrow */}
-        {currentLocationGeoJson && (
-          <MapLibreGL.ShapeSource id="current-location-source" shape={currentLocationGeoJson}>
-            <MapLibreGL.CircleLayer id="current-location-halo" style={LOCATION_HALO_STYLE} />
-            <MapLibreGL.CircleLayer id="current-location-dot" style={LOCATION_DOT_STYLE} />
-            {hasValidHeading && (
-              <MapLibreGL.SymbolLayer
-                id="current-location-heading"
-                style={LOCATION_HEADING_STYLE}
-              />
-            )}
-          </MapLibreGL.ShapeSource>
-        )}
+        <MapLibreGL.ShapeSource id="current-location-source" shape={currentLocationGeoJson}>
+          <MapLibreGL.CircleLayer id="current-location-halo" style={locationHaloStyle} />
+          <MapLibreGL.CircleLayer id="current-location-dot" style={locationDotStyle} />
+          <MapLibreGL.SymbolLayer
+            id="current-location-heading"
+            filter={HEADING_FILTER}
+            style={locationHeadingStyle}
+          />
+        </MapLibreGL.ShapeSource>
       </MapLibreGL.MapView>
 
       {/* Top-Right Layer Switcher */}

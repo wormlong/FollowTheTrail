@@ -32,8 +32,12 @@ export const DiscoverScreen: React.FC<DiscoverScreenProps> = ({ onOpenOnMap }) =
   const [notice, setNotice] = useState<string | null>(null);
 
   const reloadImported = useCallback(async () => {
-    const list = await listImportedTracks();
-    setImportedTracks(list);
+    try {
+      const list = await listImportedTracks();
+      setImportedTracks(list);
+    } catch {
+      setNotice('读取导入轨迹失败');
+    }
   }, []);
 
   useEffect(() => {
@@ -53,8 +57,12 @@ export const DiscoverScreen: React.FC<DiscoverScreenProps> = ({ onOpenOnMap }) =
   };
 
   const handleDelete = async (id: string) => {
-    await deleteImportedTrack(id);
-    await reloadImported();
+    try {
+      await deleteImportedTrack(id);
+      await reloadImported();
+    } catch {
+      setNotice('删除轨迹失败');
+    }
   };
 
   return (

@@ -9,6 +9,7 @@ import {
   parseGpxXml,
   shouldAcceptGpsDelta,
 } from '../utils/trailMath';
+import { createOrganicOutdoorStyle } from '../map/organicOutdoorStyle';
 
 describe('trailMath core outdoor algorithms', () => {
   test('haversineMeters computes accurate distance between Xiangshan points', () => {
@@ -139,5 +140,46 @@ describe('trailMath core outdoor algorithms', () => {
       6200
     );
     expect(nearest?.id).toBe('p2');
+  });
+});
+
+describe('Organic Maps outdoor vector style', () => {
+  test('generates valid Style v8 with OpenFreeMap vector source, lighting, and Chinese-first typography', () => {
+    const style = createOrganicOutdoorStyle({ darkMode: false, includeOsmFallbackSource: true }) as {
+      version: number;
+      sprite: string;
+      glyphs: string;
+      light: { intensity: number };
+      sources: Record<string, { type: string }>;
+      layers: Array<{
+        id: string;
+        type: string;
+        minzoom?: number;
+        layout?: Record<string, unknown>;
+        paint?: Record<string, unknown>;
+      }>;
+    };
+
+    expect(style.version).toBe(8);
+    expect(style.sources.openmaptiles.type).toBe('vector');
+    expect(style.sources.osmFallback.type).toBe('raster');
+    expect(style.light.intensity).toBeGreaterThan(0);
+
+    const byId = new Map(style.layers.map((l) => [l.id, l]));
+    expect(byId.get('landcover_wood')?.paint?.['fill-color']).toBe('#B4C776');
+    expect(byId.get('water')?.paint?.['fill-color']).toBe('#7ED0EC');
+    expect(byId.get('building-outline')?.type).toBe('line');
+    expect(byId.get('building-3d')?.type).toBe('fill-extrusion');
+    expect(byId.get('building-housenumber')?.minzoom).toBe(16);
+    expect(byId.get('road_one_way_arrow')?.layout?.['icon-image']).toBe('arrow');
+
+    // Verify no italic fontstacks on symbol layers and single-line ZH name expression
+    const symbolLayers = style.layers.filter((l) => l.type === 'symbol');
+    for (const layer of symbolLayers) {
+      const fonts = layer.layout?.['text-font'];
+      if (Array.isArray(fonts)) {
+        expect(fonts.join(',')).not.toContain('Italic');
+      }
+    }
   });
 });

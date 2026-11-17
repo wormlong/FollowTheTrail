@@ -173,8 +173,9 @@ export const MapLibreOutdoorMap: React.FC<MapLibreOutdoorMapProps> = ({
       setBearing(Math.round(map.getBearing()));
     });
 
-    map.on('error', (evt: { sourceId?: string }) => {
-      if (evt?.sourceId === 'openmaptiles' && !osmFallbackActiveRef.current) {
+    map.on('error', (evt) => {
+      const sourceId = (evt as { sourceId?: string }).sourceId;
+      if (sourceId === 'openmaptiles' && !osmFallbackActiveRef.current) {
         osmFallbackActiveRef.current = true;
         if (map.getLayer('osm-fallback-layer')) {
           map.setLayoutProperty(
@@ -477,11 +478,14 @@ export const MapLibreOutdoorMap: React.FC<MapLibreOutdoorMapProps> = ({
         map.setLayoutProperty(layerId, 'visibility', visible ? 'visible' : 'none');
       }
     };
-    setVis('osm-base-layer', layerState.baseOutdoor);
+    for (const layerId of VECTOR_BASE_LAYER_IDS) {
+      setVis(layerId, layerState.baseOutdoor);
+    }
+    setVis('osm-fallback-layer', layerState.baseOutdoor && osmFallbackActiveRef.current);
     setVis('satellite-layer', layerState.satellite);
     setVis('topo-contours-layer', layerState.contours);
     if (map.getLayer('topo-contours-layer')) {
-      const opacity = layerState.satellite ? 0.45 : layerState.baseOutdoor ? 0.52 : 0.96;
+      const opacity = layerState.satellite ? 0.45 : layerState.baseOutdoor ? 0.48 : 0.96;
       map.setPaintProperty('topo-contours-layer', 'raster-opacity', opacity);
     }
     setVis('hillshade-tint-layer', layerState.hillshade);
@@ -718,7 +722,7 @@ export const MapLibreOutdoorMap: React.FC<MapLibreOutdoorMapProps> = ({
     if (target) {
       setLocalGps(target);
       setLocateError(null);
-      map?.flyTo({ center: [target.lng, target.lat], zoom: 15.5, duration: 400 });
+      map?.flyTo({ center: [target.lng, target.lat], zoom: 16.2, duration: 400 });
       return;
     }
     const pts = [...tracks.filter((t) => t.visible).flatMap((t) => t.points), ...referencePoints];
@@ -730,7 +734,7 @@ export const MapLibreOutdoorMap: React.FC<MapLibreOutdoorMapProps> = ({
   };
 
   return (
-    <div className="relative w-full h-full overflow-hidden bg-[#EFECE4]">
+    <div className="relative w-full h-full overflow-hidden bg-[#EDE9DA]">
       <div ref={containerRef} className="w-full h-full" />
 
       {locateError && !onRequestLocate && (

@@ -89,17 +89,21 @@ export const MeScreen: React.FC<{ highlightedTrackId?: string | null }> = ({
   const [downloadProgress, setDownloadProgress] = useState<number>(0);
 
   const reloadTracks = useCallback(async (focusId?: string | null) => {
-    const db = await openTrailDatabase();
-    const rows = await db.getAllAsync<TrackRow>(
-      `SELECT id, name, started_at, distance_meters, moving_time_ms, avg_speed_mps, ascent_meters, max_altitude_meters
-       FROM tracks
-       WHERE (source IS NULL OR source = 'recorded') AND id NOT LIKE 'imp-%'
-       ORDER BY started_at DESC`
-    );
-    setTracks(rows);
-    if (focusId) {
-      const match = rows.find((r) => r.id === focusId);
-      if (match) setSelectedTrack(match);
+    try {
+      const db = await openTrailDatabase();
+      const rows = await db.getAllAsync<TrackRow>(
+        `SELECT id, name, started_at, distance_meters, moving_time_ms, avg_speed_mps, ascent_meters, max_altitude_meters
+         FROM tracks
+         WHERE (source IS NULL OR source = 'recorded') AND id NOT LIKE 'imp-%'
+         ORDER BY started_at DESC`
+      );
+      setTracks(rows);
+      if (focusId) {
+        const match = rows.find((r) => r.id === focusId);
+        if (match) setSelectedTrack(match);
+      }
+    } catch {
+      setStatusNotice('读取历史轨迹失败，请稍后重试');
     }
   }, []);
 
@@ -123,29 +127,33 @@ export const MeScreen: React.FC<{ highlightedTrackId?: string | null }> = ({
   }, []);
 
   const saveProfile = async () => {
-    const db = await openTrailDatabase();
-    await db.runAsync(
-      `INSERT INTO user_profile (
-         id, nickname, home_region, emergency_contact_name, emergency_contact_phone, sos_note, updated_at
-       ) VALUES ('default', ?, ?, ?, ?, ?, ?)
-       ON CONFLICT(id) DO UPDATE SET
-         nickname = excluded.nickname,
-         home_region = excluded.home_region,
-         emergency_contact_name = excluded.emergency_contact_name,
-         emergency_contact_phone = excluded.emergency_contact_phone,
-         sos_note = excluded.sos_note,
-         updated_at = excluded.updated_at`,
-      [
-        profile.nickname.trim() || '山野行者',
-        profile.home_region.trim(),
-        profile.emergency_contact_name.trim(),
-        profile.emergency_contact_phone.trim(),
-        profile.sos_note.trim(),
-        Date.now(),
-      ]
-    );
-    setProfileSavedHint('已保存至本地户外档案');
-    setTimeout(() => setProfileSavedHint(null), 2200);
+    try {
+      const db = await openTrailDatabase();
+      await db.runAsync(
+        `INSERT INTO user_profile (
+           id, nickname, home_region, emergency_contact_name, emergency_contact_phone, sos_note, updated_at
+         ) VALUES ('default', ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET
+           nickname = excluded.nickname,
+           home_region = excluded.home_region,
+           emergency_contact_name = excluded.emergency_contact_name,
+           emergency_contact_phone = excluded.emergency_contact_phone,
+           sos_note = excluded.sos_note,
+           updated_at = excluded.updated_at`,
+        [
+          profile.nickname.trim() || '山野行者',
+          profile.home_region.trim(),
+          profile.emergency_contact_name.trim(),
+          profile.emergency_contact_phone.trim(),
+          profile.sos_note.trim(),
+          Date.now(),
+        ]
+      );
+      setProfileSavedHint('已保存至本地户外档案');
+      setTimeout(() => setProfileSavedHint(null), 2200);
+    } catch {
+      setProfileSavedHint('保存失败，请重试');
+    }
   };
 
   const archiveSummary = useMemo(() => {
@@ -177,15 +185,16 @@ export const MeScreen: React.FC<{ highlightedTrackId?: string | null }> = ({
       setSelectedPhotos([]);
       return;
     }
-    openTrailDatabase().then((db) =>
-      db
-        .getAllAsync<TrackPhotoRow>(
+    openTrailDatabase()
+      .then((db) =>
+        db.getAllAsync<TrackPhotoRow>(
           `SELECT id, thumbnail_uri, original_uri, captured_at, track_point_id
            FROM photos WHERE track_id = ? ORDER BY captured_at ASC`,
           [selectedTrack.id]
         )
-        .then(setSelectedPhotos)
-    );
+      )
+      .then(setSelectedPhotos)
+      .catch(() => setSelectedPhotos([]));
   }, [selectedTrack]);
 
   const refreshOfflinePacks = async () => {
